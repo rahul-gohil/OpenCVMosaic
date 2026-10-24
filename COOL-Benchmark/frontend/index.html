@@ -116,7 +116,7 @@
             <div id="strips-gallery" class="image-gallery"></div>
             <div id="merged-preview" style="margin-top:12px;text-align:center;"></div>
             <div id="stage-timings" class="stage-timings" style="display:none;">
-                <h4>Total Chunk Processing</h4>
+                <h4 id="stage-title">Total Chunk Processing</h4>
                 <div id="stage-rows"></div>
                 <div id="merge-timing" style="margin-top:8px;padding-top:8px;border-top:1px solid #e2e8f0;display:none;">
                     <h4>Total Merging</h4>
@@ -126,6 +126,20 @@
                         <tr><td style="padding:2px 0;">Homography</td><td style="text-align:right;font-weight:600;" id="merge-homography">-</td></tr>
                         <tr><td style="padding:2px 0;">Stitching</td><td style="text-align:right;font-weight:600;" id="merge-stitching">-</td></tr>
                         <tr style="border-top:1px solid #e2e8f0;"><td style="padding:4px 0 2px 0;">Total merge time</td><td style="text-align:right;padding:4px 0 2px 0;font-weight:600;" id="merge-time-val">-</td></tr>
+                    </table>
+                </div>
+            </div>
+            <div id="stage-timings-2" class="stage-timings" style="display:none;">
+                <h4 id="stage-title-2">Total Chunk Processing (DIY)</h4>
+                <div id="stage-rows-2"></div>
+                <div id="merge-timing-2" style="margin-top:8px;padding-top:8px;border-top:1px solid #e2e8f0;display:none;">
+                    <h4>Total Merging (DIY)</h4>
+                    <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+                        <tr><td style="padding:2px 0;">SIFT</td><td style="text-align:right;font-weight:600;" id="merge-sift-2">-</td></tr>
+                        <tr><td style="padding:2px 0;">Matching</td><td style="text-align:right;font-weight:600;" id="merge-matching-2">-</td></tr>
+                        <tr><td style="padding:2px 0;">Homography</td><td style="text-align:right;font-weight:600;" id="merge-homography-2">-</td></tr>
+                        <tr><td style="padding:2px 0;">Stitching</td><td style="text-align:right;font-weight:600;" id="merge-stitching-2">-</td></tr>
+                        <tr style="border-top:1px solid #e2e8f0;"><td style="padding:4px 0 2px 0;">Total merge time</td><td style="text-align:right;padding:4px 0 2px 0;font-weight:600;" id="merge-time-val-2">-</td></tr>
                     </table>
                 </div>
             </div>
@@ -252,10 +266,21 @@
                     }
 
                     // Update per-stage timings
-                    if (data.results && data.results.diy && data.results.diy.per_stage_timings) {
-                        showStageTimings(data.results.diy.per_stage_timings, data.results.diy.merge_time_s, data.results.diy.merge_stage_timings);
+                    if (currentMode === "compare" && data.results) {
+                        document.getElementById("stage-timings").style.display = "block";
+                        document.getElementById("stage-timings-2").style.display = "block";
+                        document.getElementById("stage-title").textContent = "Total Chunk Processing (COOL)";
+                        document.getElementById("stage-title-2").textContent = "Total Chunk Processing (DIY)";
+                        if (data.results.cool && data.results.cool.per_stage_timings) showStageTimings(data.results.cool.per_stage_timings, data.results.cool.merge_time_s, data.results.cool.merge_stage_timings, "");
+                        if (data.results.diy && data.results.diy.per_stage_timings) showStageTimings(data.results.diy.per_stage_timings, data.results.diy.merge_time_s, data.results.diy.merge_stage_timings, "-2");
+                    } else if (data.results && data.results.diy && data.results.diy.per_stage_timings) {
+                        document.getElementById("stage-timings").style.display = "block";
+                        document.getElementById("stage-timings-2").style.display = "none";
+                        showStageTimings(data.results.diy.per_stage_timings, data.results.diy.merge_time_s, data.results.diy.merge_stage_timings, "");
                     } else if (data.results && data.results.cool && data.results.cool.per_stage_timings) {
-                        showStageTimings(data.results.cool.per_stage_timings, data.results.cool.merge_time_s, data.results.cool.merge_stage_timings);
+                        document.getElementById("stage-timings").style.display = "block";
+                        document.getElementById("stage-timings-2").style.display = "none";
+                        showStageTimings(data.results.cool.per_stage_timings, data.results.cool.merge_time_s, data.results.cool.merge_stage_timings, "");
                     }
 
                     // Update instance info
@@ -339,10 +364,11 @@
             }
         }
 
-        function showStageTimings(timings, mergeTime, mergeStageTimings) {
-            const el = document.getElementById("stage-timings");
-            const rows = document.getElementById("stage-rows");
-            const mergeEl = document.getElementById("merge-timing");
+        function showStageTimings(timings, mergeTime, mergeStageTimings, suffix) {
+            suffix = suffix || "";
+            const el = document.getElementById("stage-timings" + suffix);
+            const rows = document.getElementById("stage-rows" + suffix);
+            const mergeEl = document.getElementById("merge-timing" + suffix);
             if (!timings || timings.frames === 0) { el.style.display = "none"; return; }
             el.style.display = "block";
             const load = timings.load || 0;
@@ -367,12 +393,17 @@
             `;
             if (mergeTime) {
                 mergeEl.style.display = "block";
-                document.getElementById("merge-time-val").textContent = mergeTime + "s";
+                const mv = document.getElementById("merge-time-val" + suffix);
+                if (mv) mv.textContent = mergeTime + "s";
                 if (mergeStageTimings) {
-                    document.getElementById("merge-sift").textContent = (mergeStageTimings.sift || '-') + "s";
-                    document.getElementById("merge-matching").textContent = (mergeStageTimings.matching || '-') + "s";
-                    document.getElementById("merge-homography").textContent = (mergeStageTimings.homography || '-') + "s";
-                    document.getElementById("merge-stitching").textContent = (mergeStageTimings.stitching || '-') + "s";
+                    const ms = document.getElementById("merge-sift" + suffix);
+                    const mm = document.getElementById("merge-matching" + suffix);
+                    const mh = document.getElementById("merge-homography" + suffix);
+                    const mst = document.getElementById("merge-stitching" + suffix);
+                    if (ms) ms.textContent = (mergeStageTimings.sift || '-') + "s";
+                    if (mm) mm.textContent = (mergeStageTimings.matching || '-') + "s";
+                    if (mh) mh.textContent = (mergeStageTimings.homography || '-') + "s";
+                    if (mst) mst.textContent = (mergeStageTimings.stitching || '-') + "s";
                 }
             }
         }
@@ -382,9 +413,24 @@
             const diy = results.diy || {};
             const cool = results.cool || {};
             const cmp = results.comparison || {};
-            if (mode === "diy" && diy.per_stage_timings) showStageTimings(diy.per_stage_timings, diy.merge_time_s, diy.merge_stage_timings);
-            else if (mode === "cool" && cool.per_stage_timings) showStageTimings(cool.per_stage_timings, cool.merge_time_s, cool.merge_stage_timings);
-            else if (mode === "compare" && cool.per_stage_timings) showStageTimings(cool.per_stage_timings, cool.merge_time_s, cool.merge_stage_timings);
+            if (mode === "diy" && diy.per_stage_timings) {
+                document.getElementById("stage-timings").style.display = "block";
+                document.getElementById("stage-timings-2").style.display = "none";
+                document.getElementById("stage-title").textContent = "Total Chunk Processing";
+                showStageTimings(diy.per_stage_timings, diy.merge_time_s, diy.merge_stage_timings, "");
+            } else if (mode === "cool" && cool.per_stage_timings) {
+                document.getElementById("stage-timings").style.display = "block";
+                document.getElementById("stage-timings-2").style.display = "none";
+                document.getElementById("stage-title").textContent = "Total Chunk Processing";
+                showStageTimings(cool.per_stage_timings, cool.merge_time_s, cool.merge_stage_timings, "");
+            } else if (mode === "compare") {
+                document.getElementById("stage-timings").style.display = "block";
+                document.getElementById("stage-timings-2").style.display = "block";
+                document.getElementById("stage-title").textContent = "Total Chunk Processing (COOL)";
+                document.getElementById("stage-title-2").textContent = "Total Chunk Processing (DIY)";
+                if (cool.per_stage_timings) showStageTimings(cool.per_stage_timings, cool.merge_time_s, cool.merge_stage_timings, "");
+                if (diy.per_stage_timings) showStageTimings(diy.per_stage_timings, diy.merge_time_s, diy.merge_stage_timings, "-2");
+            }
             document.getElementById("results-card").classList.remove("hidden");
             const grid = document.querySelector(".metrics-grid");
 
