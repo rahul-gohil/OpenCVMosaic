@@ -161,24 +161,21 @@ class PipelineOrchestrator:
             if mode == "diy":
                 # DIY-only: use standard Graviton AMI with pip OpenCV
                 ami_id = self.diy_ami_id
-                code_url = self._create_code_tarball_and_url()
-                user_data = self._get_diy_user_data(code_url)
+                user_data = self._get_diy_user_data()
                 logger.info(f"DIY mode: using standard Graviton AMI {ami_id}")
             elif mode == "cool":
                 # COOL-only: use COOL marketplace AMI
                 ami_id = self.marketplace_ami_id
                 if not ami_id or ami_id.startswith("ami-to-be"):
                     raise ValueError("Marketplace AMI not configured. Set MARKETPLACE_AMI_ID or config-marketplace.json")
-                code_url = self._create_code_tarball_and_url()
-                user_data = self._get_user_data(code_url)
+                user_data = self._get_user_data()
                 logger.info(f"COOL mode: using marketplace AMI {ami_id}")
             else:
                 # Compare mode: use COOL marketplace AMI (runs both)
                 ami_id = self.marketplace_ami_id
                 if not ami_id or ami_id.startswith("ami-to-be"):
                     raise ValueError("Marketplace AMI not configured. Set MARKETPLACE_AMI_ID or config-marketplace.json")
-                code_url = self._create_code_tarball_and_url()
-                user_data = self._get_user_data(code_url)
+                user_data = self._get_user_data()
                 logger.info(f"Compare mode: using marketplace AMI {ami_id}")
 
             # Launch instance
@@ -361,66 +358,15 @@ class PipelineOrchestrator:
             "diy_content_pct": diy.get("content_pct"),
         }
 
-    def _create_code_tarball_and_url(self) -> str:
-        """Create a tarball of the pipeline code, upload to S3, return presigned URL."""
-        import tarfile, tempfile, hashlib
-        # Create tarball from the project root (parent of COOL-Benchmark dir)
-        import os as _os
-        project_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        tarball_path = os.path.join(tempfile.gettempdir(), "opencvmosaic-code.tar.gz")
-        exclude_patterns = {".git", "venv", "outputs", "datasets", "Papers", ".env",
-                            "__pycache__", "*.pyc", "*.pem", "node_modules"}
-        with tarfile.open(tarball_path, "w:gz") as tar:
-            for root, dirs, files in os.walk(project_root):
-                # Compute relative path from project root
-                rel_root = _os.path.relpath(root, project_root)
-                if rel_root == ".":
-                    rel_root = ""
-                for fname in files:
-                    if any(fname.endswith(ext) for ext in [".pyc", ".pem"]):
-                        continue
-                    if fname.startswith(".env"):
-                        continue
-                    full_path = os.path.join(root, fname)
-                    arcname = _os.path.join("OpenCVMosaic", rel_root, fname) if rel_root else _os.path.join("OpenCVMosaic", fname)
-                    tar.add(full_path, arcname=arcname)
-                # Filter directories
-                dirs[:] = [d for d in dirs if d not in exclude_patterns]
-                for fname in files:
-                    if any(fname.endswith(ext) for ext in [".pyc", ".pem", ".env"]):
-                        continue
-                    if fname.startswith(".env"):
-                        continue
-                    full_path = os.path.join(root, fname)
-                    arcname = os.path.join("OpenCVMosaic", full_path.lstrip("./"))
-                    tar.add(full_path, arcname=arcname)
-
-        # Upload to S3
-        s3_key = "pipeline-code/opencvmosaic-code.tar.gz"
-        bucket = "mosaic-datasets-167552806196-ap-south-1-an"
-        import boto3
-        s3 = boto3.client("s3", region_name=self.region)
-        s3.upload_file(tarball_path, bucket, s3_key)
-        logger.info(f"Uploaded code tarball to s3://{bucket}/{s3_key}")
-
-        # Generate presigned URL (expires in 2 hours)
-        url = s3.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket, "Key": s3_key},
-            ExpiresIn=7200,
-        )
-        logger.info("Generated presigned URL for code download")
-        return url
-
-    def _get_user_data(self, code_url: str = "") -> str:
-        ud = """#!/bin/bash
+    def _get_user_data(self) -> str:
+        return """#!/bin/bash
 set -e
 apt-get update -y
 apt-get install -y git python3-pip python3-venv awscli
 cd /opt
-curl -sL "{code_url}" -o /tmp/opencvmosaic-code.tar.gz
-mkdir -p /opt/OpenCVMosaic
-tar -xzf /tmp/opencvmosaic-code.tar.gz -C /opt/
+if [ ! -d "/opt/OpenCVMosaic" ]; then
+    git clone --depth 1 https://github.com/rahul-gohil/OpenCVMosaic.git /opt/OpenCVMosaic
+fi
 cd /opt/OpenCVMosaic
 source /opt/cool/venvs/python_3.12/bin/activate
 pip install --quiet numpy scipy
@@ -448,11 +394,10 @@ systemctl enable pipeline-mcp
 systemctl start pipeline-mcp
 echo "Pipeline ready" > /tmp/pipeline_ready
 """
-        return ud.replace("{code_url}", code_url)
 
-    def _get_diy_user_data(self, code_url: str = "") -> str:
+    def _get_diy_user_data(self) -> str:
         """User data for standard Graviton AMI (no COOL) - installs pip OpenCV."""
-        ud = """#!/bin/bash
+        return """#!/bin/bash
 set -e
 # Update system
 dnf update -y || apt-get update -y
@@ -467,12 +412,12 @@ fi
 # Install OpenCV and dependencies via pip
 pip3 install --break-system-packages opencv-python-headless numpy scipy aiohttp boto3 psutil Pillow 2>/dev/null || pip3 install opencv-python-headless numpy scipy aiohttp boto3 psutil Pillow
 
-# Download the pipeline code via presigned URL (no AWS credentials needed)
+# Clone the pipeline code from GitHub (no AWS credentials needed)
 mkdir -p /opt
 cd /opt
-curl -sL "{code_url}" -o /tmp/opencvmosaic-code.tar.gz
-mkdir -p /opt/OpenCVMosaic
-tar -xzf /tmp/opencvmosaic-code.tar.gz -C /opt/
+if [ ! -d "/opt/OpenCVMosaic" ]; then
+    git clone --depth 1 https://github.com/rahul-gohil/OpenCVMosaic.git /opt/OpenCVMosaic
+fi
 cd /opt/OpenCVMosaic
 
 # Deploy pipeline MCP server
@@ -503,7 +448,6 @@ systemctl enable pipeline-mcp
 systemctl start pipeline-mcp
 echo "DIY Pipeline ready" > /tmp/pipeline_ready
 """
-        return ud.replace("{code_url}", code_url)
 
     async def get_benchmark_status(self, task_id: str) -> dict:
         task = self.tasks.get(task_id)
