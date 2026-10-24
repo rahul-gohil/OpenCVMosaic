@@ -163,12 +163,14 @@
                 const resp = await fetch(API + "/api/config");
                 const cfg = await resp.json();
                 if (cfg.ami_id) document.getElementById("ami-id").value = cfg.ami_id;
+                if (cfg.key_path) currentKeyPath = cfg.key_path;
             } catch (e) { /* ignore */ }
         })();
         let currentTaskId = null;
         let pollInterval = null;
         let logInterval = null;
         let currentMode = 'diy';
+        let currentKeyPath = '~/.ssh/mosaic-key.pem';
 
         function log(msg) {
             const el = document.getElementById("log");
@@ -262,8 +264,9 @@
                     }
                     if (data.instance_ip) {
                         document.getElementById("inst-ip").textContent = data.instance_ip;
+                        const sshUser = data.ssh_user || "ec2-user";
                         document.getElementById("inst-ssh").textContent =
-                            "ssh -i ~/.ssh/mosaic-key.pem ec2-user@" + data.instance_ip;
+                            "ssh -i " + currentKeyPath + " " + sshUser + "@" + data.instance_ip;
                     }
 
                     if (status === "completed") {

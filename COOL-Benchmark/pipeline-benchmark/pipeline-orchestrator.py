@@ -344,7 +344,7 @@ class PipelineOrchestrator:
         import subprocess
         key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
         ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                   f"ec2-user@{ip}", " && ".join(commands)]
+                   f"ubuntu@{ip}", " && ".join(commands)]
         subprocess.run(ssh_cmd, check=True, timeout=600)
 
     async def _download_results_locally(self, task, ip: str):
@@ -582,6 +582,7 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
             "instance_type": task.instance_type,
             "instance_id": getattr(task, "instance_id", None),
             "instance_ip": getattr(task, "instance_ip", None),
+            "ssh_user": getattr(task, "ssh_user", "ec2-user"),
             "build_progress": task.build_progress,
             "pipeline_stage": getattr(self, "_last_pipeline_stage", ""),
             "pipeline_pct": getattr(self, "_last_pipeline_pct", 0),
@@ -636,6 +637,7 @@ async def create_app():
         resp = web.json_response({
             "ami_id": orchestrator.marketplace_ami_id,
             "diy_ami_id": orchestrator.diy_ami_id,
+            "key_path": os.environ.get("EC2_KEY_PATH", "key.pem"),
         })
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
