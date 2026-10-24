@@ -41,7 +41,7 @@ except ImportError as e:
     logger.error(f"OpenCV not available: {e}")
 
 PIPELINE_DIR = os.environ.get("PIPELINE_DIR", "/opt/OpenCVMosaic")
-PYTHON = os.environ.get("PYTHON", "python3")
+PYTHON = sys.executable  # Use the Python that is running this server
 
 # Global state for async pipeline execution
 pipeline_state = {
@@ -81,6 +81,7 @@ def _run_pipeline_sync(chunk_size, work_dir):
              "--output-root", os.path.join(work_dir, "chunks"),
              "--prefix", "chunk"],
             cwd=PIPELINE_DIR, capture_output=True, text=True,
+            env={**os.environ, "PYTHONPATH": os.environ.get("PYTHONPATH", ""), "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", "")},
         )
         if proc.returncode != 0:
             logger.error(f"Stitch failed: {proc.stderr[-500:]}")
@@ -97,6 +98,7 @@ def _run_pipeline_sync(chunk_size, work_dir):
              "--inputs", chunk_pattern,
              "--out", os.path.join(work_dir, "merged")],
             cwd=PIPELINE_DIR, capture_output=True, text=True,
+            env={**os.environ, "PYTHONPATH": os.environ.get("PYTHONPATH", ""), "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", "")},
         )
         if proc.returncode != 0:
             logger.error(f"Merge failed: {proc.stderr[-500:]}")
