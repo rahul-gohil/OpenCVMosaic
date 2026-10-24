@@ -53,14 +53,6 @@
         <div class="card">
             <h2>Configuration</h2>
             <div class="form-row">
-                <label>S3 Input:</label>
-                <input type="text" id="s3-input" value="s3://your-bucket/inputs/pistachio" placeholder="s3://bucket/inputs/pistachio">
-            </div>
-            <div class="form-row">
-                <label>S3 Output:</label>
-                <input type="text" id="s3-output" value="s3://your-bucket/benchmark_results" placeholder="s3://bucket/benchmark_results">
-            </div>
-            <div class="form-row">
                 <label>Chunk Size:</label>
                 <input type="number" id="chunk-size" value="18" min="1" max="100">
             </div>
@@ -158,8 +150,6 @@
             try {
                 const resp = await fetch(API + "/api/config");
                 const cfg = await resp.json();
-                if (cfg.s3_input) document.getElementById("s3-input").value = cfg.s3_input;
-                if (cfg.s3_output) document.getElementById("s3-output").value = cfg.s3_output;
                 if (cfg.ami_id) document.getElementById("ami-id").value = cfg.ami_id;
             } catch (e) { /* ignore */ }
         })();
@@ -175,8 +165,6 @@
         }
 
         async function runBenchmark() {
-            const s3Input = document.getElementById("s3-input").value;
-            const s3Output = document.getElementById("s3-output").value;
             const chunkSize = parseInt(document.getElementById("chunk-size").value);
             const instanceType = document.getElementById("instance-type").value;
             const mode = document.getElementById("mode").value;
@@ -206,8 +194,6 @@
                         instanceType: instanceType,
                         maxInstances: 1,
                         chunkSize: chunkSize,
-                        s3Input: s3Input,
-                        s3Output: s3Output,
                         opencvVersion: "5",
                         mode: mode
                     })

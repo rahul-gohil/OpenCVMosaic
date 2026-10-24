@@ -55,7 +55,7 @@ pipeline_state = {
 }
 
 
-def _run_pipeline_sync(s3_input, s3_output, chunk_size, work_dir):
+def _run_pipeline_sync(chunk_size, work_dir):
     """Run the pipeline synchronously (called in a background thread)."""
     global pipeline_state
     pipeline_state["status"] = "running"
@@ -63,18 +63,12 @@ def _run_pipeline_sync(s3_input, s3_output, chunk_size, work_dir):
     pipeline_state["work_dir"] = work_dir
 
     try:
-        # Step 1: Download dataset from S3
-        input_dir = os.path.join(work_dir, "input")
-        os.makedirs(input_dir, exist_ok=True)
-        pipeline_state["progress"] = {"current_step": "Downloading dataset", "progress_percent": 5}
-        dl_start = time.perf_counter()
-        proc = subprocess.run(
-            ["aws", "s3", "sync", s3_input, input_dir],
-            capture_output=True, text=True,
-        )
-        if proc.returncode != 0:
-            raise Exception(f"S3 download failed: {proc.stderr[-500:]}")
-        dl_time = time.perf_counter() - dl_start
+        # Step 1: Use local assets (shipped with repo)
+        input_dir = os.path.join(PIPELINE_DIR, "COOL-Benchmark", "assets")
+        if not os.path.isdir(input_dir):
+            raise Exception(f"Assets directory not found: {input_dir}")
+        pipeline_state["progress"] = {"current_step": "Loading local assets", "progress_percent": 5}
+        dl_time = 0.0
 
         # Step 2: Run chunked stitching
         pipeline_state["progress"] = {"current_step": "Stitching chunks", "progress_percent": 15}
@@ -109,14 +103,9 @@ def _run_pipeline_sync(s3_input, s3_output, chunk_size, work_dir):
         merge_time = time.perf_counter() - merge_start
         pipeline_state["progress"] = {"current_step": "Merge complete", "progress_percent": 85}
 
-        # Step 4: Upload results to S3
-        pipeline_state["progress"] = {"current_step": "Uploading results", "progress_percent": 90}
-        ul_start = time.perf_counter()
-        proc = subprocess.run(
-            ["aws", "s3", "sync", os.path.join(work_dir, "merged"), s3_output],
-            capture_output=True, text=True,
-        )
-        ul_time = time.perf_counter() - ul_start
+        # Step 4: Skip upload (no S3) - results available via image gallery
+        pipeline_state["progress"] = {"current_step": "Finalizing", "progress_percent": 90}
+        ul_time = 0.0
 
         total_time = time.perf_counter() - pipeline_state["start_time"]
 
@@ -129,10 +118,8 @@ def _run_pipeline_sync(s3_input, s3_output, chunk_size, work_dir):
 
         metrics = {
             "total_time_s": round(total_time, 2),
-            "download_time_s": round(dl_time, 2),
             "stitch_time_s": round(stitch_time, 2),
             "merge_time_s": round(merge_time, 2),
-            "upload_time_s": round(ul_time, 2),
             "chunk_size": chunk_size,
             "opencv_version": cv2.__version__ if OPENCV_AVAILABLE else "unknown",
             "is_cool": "/opt/cool" in (cv2.__file__ if OPENCV_AVAILABLE else ""),
@@ -228,13 +215,8 @@ async def handle_start_pipeline(request):
         return web.json_response({"error": "Pipeline already running"}, status=409)
 
     data = await asyncio.wait_for(request.json(), timeout=60)
-    s3_input = data.get("s3_input", "")
-    s3_output = data.get("s3_output", "")
     chunk_size = data.get("chunk_size", 18)
     work_dir = data.get("work_dir", "/tmp/scratchpad")
-
-    if not s3_input or not s3_output:
-        return web.json_response({"error": "s3_input and s3_output required"}, status=400)
 
     # Reset state
     pipeline_state = {
@@ -255,7 +237,7 @@ async def handle_start_pipeline(request):
     # Start pipeline in background thread
     thread = threading.Thread(
         target=_run_pipeline_sync,
-        args=(s3_input, s3_output, chunk_size, work_dir),
+        args=(chunk_size, work_dir),
         daemon=True,
     )
     pipeline_state["thread"] = thread

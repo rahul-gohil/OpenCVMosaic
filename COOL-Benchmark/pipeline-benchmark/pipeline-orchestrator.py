@@ -69,8 +69,6 @@ class PipelineBenchmarkTask:
     instance_type: str
     max_instances: int
     chunk_size: int
-    s3_input: str
-    s3_output: str
     status: TaskStatus
     start_time: float
     opencv_version: str = "5"
@@ -124,7 +122,7 @@ class PipelineOrchestrator:
 
     async def start_benchmark(
         self, instance_type: str, max_instances: int, chunk_size: int,
-        s3_input: str, s3_output: str, opencv_version: str = "5",
+        opencv_version: str = "5",
         mode: str = "diy",
     ) -> str:
         task_id = str(__import__("uuid").uuid4())
@@ -133,8 +131,6 @@ class PipelineOrchestrator:
             instance_type=instance_type,
             max_instances=max_instances,
             chunk_size=chunk_size,
-            s3_input=s3_input,
-            s3_output=s3_output,
             status=TaskStatus.PENDING,
             start_time=__import__("time").time(),
         )
@@ -222,7 +218,7 @@ class PipelineOrchestrator:
                 # DIY-only: run once with standard OpenCV
                 diy_output = f"{task.s3_output}/diy"
                 diy_metrics = await self._run_pipeline_on_instance(
-                    ip, task.s3_input, diy_output, task.chunk_size
+                    ip, task.chunk_size
                 )
                 task.build_progress = {"current_step": "Completed", "progress_percent": 90}
                 task.results = {
@@ -259,7 +255,7 @@ class PipelineOrchestrator:
                 # Run DIY build
                 diy_output = f"{task.s3_output}/diy"
                 diy_metrics = await self._run_pipeline_on_instance(
-                    ip, task.s3_input, diy_output, task.chunk_size
+                    ip, task.chunk_size
                 )
 
                 # Compare
@@ -290,13 +286,13 @@ class PipelineOrchestrator:
                     except Exception:
                         pass
 
-    async def _run_pipeline_on_instance(self, ip: str, s3_input: str, s3_output: str, chunk_size: int) -> dict:
+    async def _run_pipeline_on_instance(self, ip: str, chunk_size: int) -> dict:
         import asyncio as _asyncio
         async with aiohttp.ClientSession() as session:
             # Start pipeline (returns immediately now)
             async with session.post(
                 f"http://{ip}:8080/run-pipeline",
-                json={"s3_input": s3_input, "s3_output": s3_output, "chunk_size": chunk_size},
+                json={"chunk_size": chunk_size},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status not in (200, 202):
@@ -362,7 +358,7 @@ class PipelineOrchestrator:
         return """#!/bin/bash
 set -e
 apt-get update -y
-apt-get install -y git python3-pip python3-venv awscli
+apt-get install -y git python3-pip python3-venv
 cd /opt
 if [ ! -d "/opt/OpenCVMosaic" ]; then
     git clone --depth 1 https://github.com/rahul-gohil/OpenCVMosaic.git /opt/OpenCVMosaic
@@ -402,15 +398,15 @@ set -e
 # Update system
 dnf update -y || apt-get update -y
 
-# Install Python, pip, git, awscli
+# Install Python, pip, git (no awscli needed)
 if command -v dnf &> /dev/null; then
-    dnf install -y python3 python3-pip git awscli
+    dnf install -y python3 python3-pip git
 else
-    apt-get install -y python3 python3-pip git awscli
+    apt-get install -y python3 python3-pip git
 fi
 
-# Install OpenCV and dependencies via pip
-pip3 install --break-system-packages opencv-python-headless numpy scipy aiohttp boto3 psutil Pillow 2>/dev/null || pip3 install opencv-python-headless numpy scipy aiohttp boto3 psutil Pillow
+# Install OpenCV and dependencies via pip (no boto3 needed)
+pip3 install --break-system-packages opencv-python-headless numpy scipy aiohttp psutil Pillow 2>/dev/null || pip3 install opencv-python-headless numpy scipy aiohttp psutil Pillow
 
 # Clone the pipeline code from GitHub (no AWS credentials needed)
 mkdir -p /opt
@@ -508,8 +504,6 @@ async def create_app():
             instance_type=data.get("instanceType", "m7g.4xlarge"),
             max_instances=data.get("maxInstances", 1),
             chunk_size=data.get("chunkSize", 18),
-            s3_input=data.get("s3Input", ""),
-            s3_output=data.get("s3Output", ""),
             opencv_version="5",
             mode=data.get("mode", "diy"),
         )
@@ -532,8 +526,6 @@ async def create_app():
 
     async def handle_config(request):
         resp = web.json_response({
-            "s3_input": os.environ.get("S3_INPUT_PREFIX", "s3://mosaic-datasets-167552806196-ap-south-1-an/UAVPistachio/images_nadir_RGB/"),
-            "s3_output": os.environ.get("S3_OUTPUT_PREFIX", "s3://mosaic-datasets-167552806196-ap-south-1-an/benchmark_results/"),
             "ami_id": orchestrator.marketplace_ami_id,
             "diy_ami_id": orchestrator.diy_ami_id,
         })
