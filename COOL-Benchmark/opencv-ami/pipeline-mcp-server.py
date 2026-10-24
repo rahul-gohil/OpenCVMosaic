@@ -75,6 +75,9 @@ def _run_pipeline_sync(s3_input, s3_output, chunk_size, work_dir):
         if proc.returncode != 0:
             raise Exception(f"S3 download failed: {proc.stderr[-500:]}")
         dl_time = time.perf_counter() - dl_start
+        # Count input images
+        image_extensions = (".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG")
+        num_images = len([f for f in os.listdir(input_dir) if f.endswith(image_extensions)])
 
         # Step 2: Run chunked stitching
         pipeline_state["progress"] = {"current_step": "Stitching chunks", "progress_percent": 15}
@@ -129,6 +132,8 @@ def _run_pipeline_sync(s3_input, s3_output, chunk_size, work_dir):
 
         metrics = {
             "total_time_s": round(total_time, 2),
+            "num_images": num_images,
+            "throughput_img_per_s": round(num_images / total_time, 2) if total_time > 0 else 0,
             "download_time_s": round(dl_time, 2),
             "stitch_time_s": round(stitch_time, 2),
             "merge_time_s": round(merge_time, 2),
