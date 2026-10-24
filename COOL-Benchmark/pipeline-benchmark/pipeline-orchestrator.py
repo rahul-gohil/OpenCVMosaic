@@ -495,7 +495,7 @@ async def create_app():
     async def handle_start_benchmark(request):
         data = await request.json()
         task_id = await orchestrator.start_benchmark(
-            instance_type=data.get("instanceType", "m7g.4xlarge"),
+            instance_type=data.get("instanceType", "m7g.xlarge"),
             max_instances=data.get("maxInstances", 1),
             chunk_size=data.get("chunkSize", 18),
             opencv_version="5",
