@@ -614,6 +614,7 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
             "instance_id": getattr(task, "instance_id", None),
             "instance_ip": getattr(task, "instance_ip", None),
             "ssh_user": getattr(task, "ssh_user", "ec2-user"),
+            "key_path": os.environ.get("EC2_KEY_PATH", "key.pem"),
             "build_progress": task.build_progress,
             "pipeline_stage": getattr(self, "_last_pipeline_stage", ""),
             "pipeline_pct": getattr(self, "_last_pipeline_pct", 0),
@@ -785,7 +786,9 @@ async def create_app():
     frontend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
     if os.path.exists(frontend_path):
         async def index_handler(request):
-            return web.FileResponse(os.path.join(frontend_path, "index.html"))
+            resp = web.FileResponse(os.path.join(frontend_path, "index.html"))
+            resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            return resp
         app.router.add_get("/", index_handler)
         app.router.add_static("/", path=frontend_path, name="static")
 

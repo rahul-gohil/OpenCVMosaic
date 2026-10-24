@@ -291,8 +291,10 @@
                     if (data.instance_ip) {
                         document.getElementById("inst-ip").textContent = data.instance_ip;
                         const sshUser = data.ssh_user || "ec2-user";
+                        const keyPath = data.key_path || currentKeyPath;
+                        currentKeyPath = keyPath;
                         document.getElementById("inst-ssh").textContent =
-                            "ssh -i " + currentKeyPath + " " + sshUser + "@" + data.instance_ip;
+                            "ssh -i " + keyPath + " " + sshUser + "@" + data.instance_ip;
                     }
 
                     if (status === "completed") {
