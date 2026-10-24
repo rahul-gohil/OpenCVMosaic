@@ -119,11 +119,13 @@
                 <div id="stage-rows"></div>
                 <div id="merge-timing" style="margin-top:8px;padding-top:8px;border-top:1px solid #e2e8f0;display:none;">
                     <h4>Total Merging</h4>
-                    <div class="stage-row"><span>SIFT</span><span class="metric-value" id="merge-sift">-</span></div>
-                    <div class="stage-row"><span>Matching</span><span class="metric-value" id="merge-matching">-</span></div>
-                    <div class="stage-row"><span>Homography</span><span class="metric-value" id="merge-homography">-</span></div>
-                    <div class="stage-row"><span>Stitching</span><span class="metric-value" id="merge-stitching">-</span></div>
-                    <div class="stage-row" style="border-top:1px solid #e2e8f0;margin-top:4px;padding-top:4px;"><span>Total merge time</span><span class="metric-value" id="merge-time-val">-</span></div>
+                    <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+                        <tr><td style="padding:2px 0;">SIFT</td><td style="text-align:right;font-weight:600;" id="merge-sift">-</td></tr>
+                        <tr><td style="padding:2px 0;">Matching</td><td style="text-align:right;font-weight:600;" id="merge-matching">-</td></tr>
+                        <tr><td style="padding:2px 0;">Homography</td><td style="text-align:right;font-weight:600;" id="merge-homography">-</td></tr>
+                        <tr><td style="padding:2px 0;">Stitching</td><td style="text-align:right;font-weight:600;" id="merge-stitching">-</td></tr>
+                        <tr style="border-top:1px solid #e2e8f0;"><td style="padding:4px 0 2px 0;">Total merge time</td><td style="text-align:right;padding:4px 0 2px 0;font-weight:600;" id="merge-time-val">-</td></tr>
+                    </table>
                 </div>
             </div>
         </div>
@@ -369,21 +371,28 @@
             document.getElementById("results-card").classList.remove("hidden");
             const grid = document.querySelector(".metrics-grid");
 
-            function metricCard(id, m, title) {
+            function metricCard(id, m, title, chunkTimings, mergeTimings) {
                 const el = document.getElementById(id);
                 const parent = el.parentElement;
                 if (title) parent.querySelector("h3").textContent = title;
+                const ct = chunkTimings || (m.per_stage_timings || {});
+                const mt = mergeTimings || (m.merge_stage_timings || {});
+                const sift = ((ct.sift || 0) + (mt.sift || 0)).toFixed(2);
+                const matching = ((ct.matching || 0) + (mt.matching || 0)).toFixed(2);
+                const homography = ((ct.homography || 0) + (mt.homography || 0)).toFixed(2);
+                const stitching = ((ct.stitching || 0) + (mt.stitching || 0)).toFixed(2);
                 el.innerHTML = `
-                    <div class="metric-row"><span class="metric-label">Total time</span><span class="metric-value">${m.total_time_s || '-'}s</span></div>
-                    <div class="metric-row"><span class="metric-label">Stitch time</span><span class="metric-value">${m.stitch_time_s || '-'}s</span></div>
-                    <div class="metric-row"><span class="metric-label">Merge time</span><span class="metric-value">${m.merge_time_s || '-'}s</span></div>
-                    <div class="metric-row" style="border-top:1px solid #e2e8f0;margin-top:4px;padding-top:4px;"><span class="metric-label">SIFT</span><span class="metric-value">${(m.per_stage_timings || {}).sift || '-'}s</span></div>
-                    <div class="metric-row"><span class="metric-label">Matching</span><span class="metric-value">${(m.per_stage_timings || {}).matching || '-'}s</span></div>
-                    <div class="metric-row"><span class="metric-label">Homography</span><span class="metric-value">${(m.per_stage_timings || {}).homography || '-'}s</span></div>
-                    <div class="metric-row"><span class="metric-label">Stitching</span><span class="metric-value">${(m.per_stage_timings || {}).stitching || '-'}s</span></div>
-                    <div class="metric-row"><span class="metric-label">Frames</span><span class="metric-value">${(m.per_stage_timings || {}).frames || '-'}</span></div>
-                    <div class="metric-row"><span class="metric-label">Canvas</span><span class="metric-value">${m.canvas_mpx || '-'} Mpx</span></div>
-                    <div class="metric-row"><span class="metric-label">OpenCV</span><span class="metric-value">${m.opencv_version || '-'}${m.is_cool ? ' (COOL)' : ' (pip)'}</span></div>
+                    <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+                        <tr><td style="padding:2px 0;">Total time</td><td style="text-align:right;font-weight:600;">${m.total_time_s || '-'}s</td></tr>
+                        <tr><td style="padding:2px 0;">Chunk time</td><td style="text-align:right;">${m.stitch_time_s || '-'}s</td></tr>
+                        <tr><td style="padding:2px 0;">Merge time</td><td style="text-align:right;">${m.merge_time_s || '-'}s</td></tr>
+                        <tr style="border-top:3px solid #cbd5e0;"><td style="padding:6px 0 2px 0;">SIFT</td><td style="text-align:right;padding:6px 0 2px 0;">${sift}s</td></tr>
+                        <tr><td style="padding:2px 0;">Matching</td><td style="text-align:right;">${matching}s</td></tr>
+                        <tr><td style="padding:2px 0;">Homography</td><td style="text-align:right;">${homography}s</td></tr>
+                        <tr><td style="padding:2px 0;">Stitching</td><td style="text-align:right;">${stitching}s</td></tr>
+                        <tr><td style="padding:2px 0;">Canvas</td><td style="text-align:right;">${m.canvas_mpx || '-'} Mpx</td></tr>
+                        <tr><td style="padding:2px 0;">OpenCV</td><td style="text-align:right;">${m.opencv_version || '-'}${m.is_cool ? ' (COOL)' : ' (pip)'}</td></tr>
+                    </table>
                 `;
             }
 
@@ -394,18 +403,18 @@
                 coolCard.style.display = "none";
                 diyCard.style.display = "block";
                 grid.classList.add("single");
-                metricCard("diy-metrics", diy, "DIY (OpenCV pip)");
+                metricCard("diy-metrics", diy, "DIY (OpenCV pip)", diy.per_stage_timings, diy.merge_stage_timings);
             } else if (mode === "cool") {
                 coolCard.style.display = "block";
                 diyCard.style.display = "none";
                 grid.classList.add("single");
-                metricCard("cool-metrics", cool, "COOL (OpenCV marketplace)");
+                metricCard("cool-metrics", cool, "COOL (OpenCV marketplace)", cool.per_stage_timings, cool.merge_stage_timings);
             } else {
                 coolCard.style.display = "block";
                 diyCard.style.display = "block";
                 grid.classList.remove("single");
-                metricCard("cool-metrics", cool, "COOL (OpenCV 5.1.0)");
-                metricCard("diy-metrics", diy, "DIY (OpenCV 5.0.0)");
+                metricCard("cool-metrics", cool, "COOL (OpenCV 5.1.0)", cool.per_stage_timings, cool.merge_stage_timings);
+                metricCard("diy-metrics", diy, "DIY (OpenCV 5.0.0)", diy.per_stage_timings, diy.merge_stage_timings);
                 if (cmp.speedup) {
                     document.getElementById("speedup-text").textContent =
                         "COOL is " + cmp.speedup + "x faster (saved " + cmp.time_saved_s + "s)";
