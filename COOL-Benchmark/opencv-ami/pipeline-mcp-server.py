@@ -102,6 +102,15 @@ def _run_pipeline_sync(chunk_size, work_dir):
             logger.error(f"Merge failed: {proc.stderr[-500:]}")
             raise Exception(f"Merge failed: {proc.stderr[-500:]}")
         merge_time = time.perf_counter() - merge_start
+        # Read per-stage merge timings
+        merge_timings_path = os.path.join(work_dir, "merged", "merge_timings.json")
+        merge_timings = {}
+        if os.path.exists(merge_timings_path):
+            try:
+                with open(merge_timings_path) as f:
+                    merge_timings = json.load(f)
+            except Exception:
+                pass
         # Generate downscaled preview of merged result
         merged_path = os.path.join(work_dir, "merged", "mosaic_merged.jpg")
         preview_path = os.path.join(work_dir, "merged", "mosaic_merged_preview.jpg")
@@ -134,6 +143,7 @@ def _run_pipeline_sync(chunk_size, work_dir):
             "total_time_s": round(total_time, 2),
             "stitch_time_s": round(stitch_time, 2),
             "merge_time_s": round(merge_time, 2),
+            "merge_stage_timings": merge_timings,
             "chunk_size": chunk_size,
             "opencv_version": cv2.__version__ if OPENCV_AVAILABLE else "unknown",
             "is_cool": "/opt/cool" in (cv2.__file__ if OPENCV_AVAILABLE else ""),

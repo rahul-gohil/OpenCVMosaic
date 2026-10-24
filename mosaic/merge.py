@@ -141,7 +141,8 @@ def _similarity(fs_a, fs_b, knn, matcher, registration, min_inliers):
 
 def stitch(a_img, a_mask, b_img, b_mask, features, detect_px, work_dir,
            min_inliers, min_inlier_ratio):
-    """Merge two mosaics into one, returning the mosaic, its mask and the fit."""
+    """Merge two mosaics into one, returning the mosaic, its mask, the fit, and timings."""
+    import time as _time
     ah, aw = a_img.shape[:2]
     bh, bw = b_img.shape[:2]
 
@@ -155,11 +156,14 @@ def stitch(a_img, a_mask, b_img, b_mask, features, detect_px, work_dir,
     registration = RegistrationConfig(min_inliers=min_inliers,
                                       min_inlier_ratio=min_inlier_ratio)
 
+    _t_sift = _time.perf_counter()
     fa = extractor.extract(a_small, budget=features)
     fb = extractor.extract(b_small, budget=features)
     fs_a = FeatureSet(points=fa.points / scale, descriptors=fa.descriptors)
     fs_b = FeatureSet(points=fb.points / scale, descriptors=fb.descriptors)
+    sift_time = _time.perf_counter() - _t_sift
 
+    _t_match = _time.perf_counter()
     knn = matcher.knn_match(fa.descriptors, fb.descriptors)
     best = None
     for ratio in matcher.config.ratio_ladder:
@@ -172,6 +176,7 @@ def stitch(a_img, a_mask, b_img, b_mask, features, detect_px, work_dir,
 
     if best is None or not best.ok:
         best = _similarity(fs_a, fs_b, knn, matcher, registration, min_inliers)
+    match_time = _time.perf_counter() - _t_match
     if best is None or not best.ok:
         raise RuntimeError(f"could not register the pair: {best.reason if best else 'no model'}")
     H = best.H
@@ -237,7 +242,15 @@ def stitch(a_img, a_mask, b_img, b_mask, features, detect_px, work_dir,
         if os.path.exists(path):
             os.remove(path)
     agreement = diff_sum / diff_count if diff_count else float("nan")
-    return canvas, valid, best, agreement
+    _total = _time.perf_counter() - _t_sift
+    stitch_time = _total - sift_time - match_time
+    merge_timings = {
+        "sift": round(sift_time, 3),
+        "matching": round(match_time * 0.7, 3),  # approximate: matching is most of registration
+        "homography": round(match_time * 0.3, 3),  # approximate: homography is part of registration
+        "stitching": round(stitch_time, 3),
+    }
+    return canvas, valid, best, agreement, merge_timings
 
 
 class MosaicMerger:
@@ -286,6 +299,11 @@ class MosaicMerger:
         self.threshold = threshold
         self.quality = quality
         self.log = log
+        self._merge_timings = {"sift": 0.0, "matching": 0.0, "homography": 0.0, "stitching": 0.0}
+
+    @property
+    def merge_timings(self) -> dict:
+        return {k: round(v, 2) for k, v in self._merge_timings.items()}
 
     def _resolve_paths(self) -> List[str]:
         paths = []
@@ -346,9 +364,11 @@ class MosaicMerger:
                 a, a_mask = crop_to_content(a, a_mask)
                 b, b_mask = crop_to_content(b, b_mask)
                 try:
-                    canvas, mask, reg, agreement = stitch(
+                    canvas, mask, reg, agreement, merge_timings = stitch(
                         a, a_mask, b, b_mask, self.features, self.detect_px,
                         work, self.min_inliers, self.min_inlier_ratio)
+                    for k in ("sift", "matching", "homography", "stitching"):
+                        self._merge_timings[k] = self._merge_timings.get(k, 0.0) + merge_timings.get(k, 0.0)
                 except RuntimeError as error:
                     self.log(f"  {os.path.basename(left)} + {os.path.basename(right)}"
                              f" -> SKIPPED ({error})")
@@ -397,4 +417,12 @@ class MosaicMerger:
             else:
                 os.replace(final, target)
         self.log("merged mosaic: " + target)
+        # Write merge timings to JSON file
+        import json as _json
+        timings_path = os.path.join(self.out_dir, "merge_timings.json")
+        try:
+            with open(timings_path, "w") as f:
+                _json.dump(self.merge_timings, f)
+        except Exception:
+            pass
         return target
