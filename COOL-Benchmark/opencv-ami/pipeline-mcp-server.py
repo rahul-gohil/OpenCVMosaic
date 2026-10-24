@@ -159,7 +159,7 @@ def _run_pipeline_sync(chunk_size, work_dir):
             "merge_stage_timings": merge_timings,
             "chunk_size": chunk_size,
             "opencv_version": cv2.__version__ if OPENCV_AVAILABLE else "unknown",
-            "is_cool": "/opt/cool" in (cv2.__file__ if OPENCV_AVAILABLE else ""),
+            "is_cool": "/opt/cool/python_3.12/site-packages" in (cv2.__file__ if OPENCV_AVAILABLE else ""),
             "final_mosaic_exists": os.path.exists(final_mosaic),
             "final_mosaic_size_bytes": os.path.getsize(final_mosaic) if os.path.exists(final_mosaic) else 0,
             "per_stage_timings": per_stage,
@@ -248,7 +248,7 @@ async def handle_health(request):
         "opencv_available": OPENCV_AVAILABLE,
         "opencv_version": cv2.__version__ if OPENCV_AVAILABLE else None,
         "opencv_path": cv2.__file__ if OPENCV_AVAILABLE else None,
-        "is_cool": "/opt/cool" in (cv2.__file__ if OPENCV_AVAILABLE else ""),
+        "is_cool": "/opt/cool/python_3.12/site-packages" in (cv2.__file__ if OPENCV_AVAILABLE else ""),
         "pipeline_status": _get_state("status", "idle"),
     })
 
