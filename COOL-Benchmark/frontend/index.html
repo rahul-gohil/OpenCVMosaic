@@ -100,14 +100,14 @@
         </div>
 
         <div class="card hidden" id="instance-card">
-            <h2>Instance Info</h2>
+            <h2>Instance Info & Remote Logs</h2>
             <div class="metric-row"><span class="metric-label">Instance ID</span><span class="metric-value" id="inst-id">-</span></div>
             <div class="metric-row"><span class="metric-label">Public IP</span><span class="metric-value" id="inst-ip">-</span></div>
             <div class="metric-row"><span class="metric-label">Instance Type</span><span class="metric-value" id="inst-type">-</span></div>
             <div class="metric-row"><span class="metric-label">SSH Command</span><span class="metric-value" id="inst-ssh" style="font-size:0.8em;word-break:break-all;">-</span></div>
             <div style="margin-top:12px;">
                 <button class="btn btn-danger" id="terminate-btn" onclick="terminateInstance()" style="font-size:0.85em;padding:6px 12px;">Terminate Instance</button>
-                <button class="btn btn-primary" id="logs-btn" onclick="fetchLogs()" style="font-size:0.85em;padding:6px 12px;margin-left:8px;">Fetch Logs</button>
+                <button class="btn btn-primary" id="logs-btn" onclick="fetchLogs()" style="font-size:0.85em;padding:6px 12px;margin-left:8px;">Fetch Instance Logs</button>
             </div>
             <div id="instance-logs" style="margin-top:12px;background:#1a202c;color:#e2e8f0;padding:12px;border-radius:6px;font-family:monospace;font-size:0.8em;max-height:200px;overflow-y:auto;white-space:pre-wrap;display:none;"></div>
         </div>
@@ -140,7 +140,7 @@
         </div>
 
         <div class="card">
-            <h2>Log</h2>
+            <h2>Orchestrator Activity Log</h2>
             <div id="log"></div>
         </div>
     </div>
@@ -300,9 +300,10 @@
                     p.style.cssText = "font-size:0.85em;color:#718096;margin-bottom:4px;";
                     p.textContent = "Merged Result:";
                     const img = document.createElement("img");
-                    img.src = images.merged.url;
+                    img.src = images.merged.url + "&t=" + Date.now();
                     img.style.cssText = "max-width:100%;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer;";
                     img.onclick = () => window.open(images.merged.url, "_blank");
+                    img.onerror = () => { img.alt = "Failed to load merged image"; img.style.border = "1px solid #e53e3e"; };
                     mergedDiv.appendChild(p);
                     mergedDiv.appendChild(img);
                 }
@@ -319,7 +320,8 @@
                 <div class="stage-row"><span>Matching</span><span class="metric-value">${timings.matching}s</span></div>
                 <div class="stage-row"><span>Homography</span><span class="metric-value">${timings.homography}s</span></div>
                 <div class="stage-row"><span>Stitching</span><span class="metric-value">${timings.stitching}s</span></div>
-                <div class="stage-row" style="border-top:1px solid #e2e8f0;margin-top:4px;padding-top:4px;"><span>Frames processed</span><span class="metric-value">${timings.frames}</span></div>
+                <div class="stage-row" style="border-top:1px solid #e2e8f0;margin-top:4px;padding-top:4px;"><span>Frames processed</span><span class="metric-value">${timings.frames} (incl. overlap)</span></div>
+                <div style="font-size:0.75em;color:#a0aec0;margin-top:4px;">86 unique images, 4 overlap frames counted twice across 5 chunks</div>
             `;
         }
 
@@ -340,12 +342,9 @@
                 if (title) parent.querySelector("h3").textContent = title;
                 el.innerHTML = `
                     <div class="metric-row"><span class="metric-label">Total time</span><span class="metric-value">${m.total_time_s || '-'}s</span></div>
-                    <div class="metric-row"><span class="metric-label">Download time</span><span class="metric-value">${m.download_time_s || '-'}s</span></div>
                     <div class="metric-row"><span class="metric-label">Stitch time</span><span class="metric-value">${m.stitch_time_s || '-'}s</span></div>
                     <div class="metric-row"><span class="metric-label">Merge time</span><span class="metric-value">${m.merge_time_s || '-'}s</span></div>
-                    <div class="metric-row"><span class="metric-label">Upload time</span><span class="metric-value">${m.upload_time_s || '-'}s</span></div>
                     <div class="metric-row"><span class="metric-label">Canvas</span><span class="metric-value">${m.canvas_mpx || '-'} Mpx</span></div>
-                    <div class="metric-row"><span class="metric-label">Content</span><span class="metric-value">${m.content_pct || '-'}%</span></div>
                     <div class="metric-row"><span class="metric-label">OpenCV</span><span class="metric-value">${m.opencv_version || '-'}${m.is_cool ? ' (COOL)' : ' (pip)'}</span></div>
                 `;
             }

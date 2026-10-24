@@ -274,13 +274,10 @@ class PipelineOrchestrator:
         finally:
             if instance_id:
                 try:
-                    self.instance_manager.add_instance_to_pool(instance_id, task.instance_type, "marketplace", "arm64")
-                    self.instance_manager.release_instance(instance_id)
-                except Exception:
-                    try:
-                        await self.instance_manager.terminate_instance(instance_id)
-                    except Exception:
-                        pass
+                    await self.instance_manager.terminate_instance(instance_id)
+                    logger.info(f"Terminated instance {instance_id}")
+                except Exception as e:
+                    logger.warning(f"Could not terminate instance {instance_id}: {e}")
 
     async def _run_pipeline_on_instance(self, ip: str, chunk_size: int) -> dict:
         import asyncio as _asyncio
@@ -448,15 +445,16 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
         # Build image URLs through orchestrator proxy
         image_urls = {"chunks": [], "merged": None}
         if ip and pipeline_images:
+            import urllib.parse
             for chunk in pipeline_images.get("chunks", []):
                 image_urls["chunks"].append({
                     "name": chunk["name"],
-                    "url": f"/api/benchmark/{task.task_id}/image?path={chunk['path']}",
+                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(chunk['path'], safe='')}",
                     "size_bytes": chunk.get("size_bytes", 0),
                 })
             if pipeline_images.get("merged"):
                 image_urls["merged"] = {
-                    "url": f"/api/benchmark/{task.task_id}/image?path={pipeline_images['merged']['path']}",
+                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(pipeline_images['merged']['path'], safe='')}",
                     "size_bytes": pipeline_images["merged"].get("size_bytes", 0),
                 }
 
@@ -574,7 +572,8 @@ async def create_app():
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
         ip = task.instance_ip
-        img_path = request.query.get("path", "")
+        import urllib.parse
+        img_path = urllib.parse.unquote(request.query.get("path", ""))
         if not img_path:
             resp = web.json_response({"error": "No path"}, status=400)
             resp.headers['Access-Control-Allow-Origin'] = '*'
