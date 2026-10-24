@@ -75,6 +75,7 @@ class PipelineBenchmarkTask:
     mode: str = "diy"
     instance_id: Optional[str] = None
     instance_ip: Optional[str] = None
+    local_images: Optional[Dict[str, str]] = None
     build_progress: Optional[Dict[str, Any]] = None
     end_time: Optional[float] = None
     results: Optional[Dict[str, Any]] = None
@@ -273,11 +274,27 @@ class PipelineOrchestrator:
             task.end_time = time.time()
         finally:
             if instance_id:
+                # Download results locally before terminating (so frontend can display them)
                 try:
-                    await self.instance_manager.terminate_instance(instance_id)
-                    logger.info(f"Terminated instance {instance_id}")
+                    ip = getattr(task, "instance_ip", None)
+                    if ip:
+                        await self._download_results_locally(task, ip)
                 except Exception as e:
-                    logger.warning(f"Could not terminate instance {instance_id}: {e}")
+                    logger.warning(f"Could not download results locally: {e}")
+                # Keep instance alive for 5 minutes so user can SSH/inspect
+                # Auto-terminate after grace period
+                try:
+                    async def _delayed_terminate():
+                        await asyncio.sleep(300)  # 5 minute grace period
+                        try:
+                            await self.instance_manager.terminate_instance(instance_id)
+                            logger.info(f"Auto-terminated instance {instance_id} after grace period")
+                        except Exception:
+                            pass
+                    asyncio.create_task(_delayed_terminate())
+                    logger.info(f"Instance {instance_id} kept alive for 5 min grace period")
+                except Exception as e:
+                    logger.warning(f"Could not schedule auto-terminate: {e}")
 
     async def _run_pipeline_on_instance(self, ip: str, chunk_size: int) -> dict:
         import asyncio as _asyncio
@@ -326,6 +343,76 @@ class PipelineOrchestrator:
         ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-i", key_path,
                    f"ec2-user@{ip}", " && ".join(commands)]
         subprocess.run(ssh_cmd, check=True, timeout=600)
+
+    async def _download_results_locally(self, task, ip: str):
+        """Download pipeline results from instance to local machine before termination."""
+        import subprocess, os as _os, tempfile
+        key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
+        local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task.task_id}")
+        os.makedirs(local_dir, exist_ok=True)
+        task.local_images = {"chunks": [], "merged": None, "merged_preview": None}
+
+        images = getattr(self, "_last_pipeline_images", {})
+        if not images:
+            return
+
+        # Download chunk images
+        for chunk in images.get("chunks", []):
+            remote_path = chunk["path"]
+            local_name = f"{chunk['name']}.jpg"
+            local_path = os.path.join(local_dir, local_name)
+            try:
+                proc = subprocess.run(
+                    ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
+                     f"ec2-user@{ip}:{remote_path}", local_path],
+                    capture_output=True, text=True, timeout=60
+                )
+                if proc.returncode == 0 and _os.path.exists(local_path):
+                    task.local_images["chunks"].append({
+                        "name": chunk["name"],
+                        "path": local_path,
+                        "size_bytes": _os.path.getsize(local_path),
+                    })
+            except Exception as e:
+                logger.warning(f"Could not download {remote_path}: {e}")
+
+        # Download merged result
+        if images.get("merged"):
+            remote_path = images["merged"]["path"]
+            local_path = os.path.join(local_dir, "mosaic_merged.jpg")
+            try:
+                proc = subprocess.run(
+                    ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
+                     f"ec2-user@{ip}:{remote_path}", local_path],
+                    capture_output=True, text=True, timeout=120
+                )
+                if proc.returncode == 0 and _os.path.exists(local_path):
+                    task.local_images["merged"] = {
+                        "path": local_path,
+                        "size_bytes": _os.path.getsize(local_path),
+                    }
+            except Exception as e:
+                logger.warning(f"Could not download merged: {e}")
+
+        # Download preview
+        if images.get("merged_preview"):
+            remote_path = images["merged_preview"]["path"]
+            local_path = os.path.join(local_dir, "mosaic_merged_preview.jpg")
+            try:
+                proc = subprocess.run(
+                    ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
+                     f"ec2-user@{ip}:{remote_path}", local_path],
+                    capture_output=True, text=True, timeout=60
+                )
+                if proc.returncode == 0 and _os.path.exists(local_path):
+                    task.local_images["merged_preview"] = {
+                        "path": local_path,
+                        "size_bytes": _os.path.getsize(local_path),
+                    }
+            except Exception as e:
+                logger.warning(f"Could not download preview: {e}")
+
+        logger.info(f"Downloaded {len(task.local_images['chunks'])} chunks + merged to {local_dir}")
 
     def _compare(self, cool: dict, diy: dict) -> dict:
         cool_time = cool.get("total_time_s", 0)
@@ -442,9 +529,28 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
             return {"error": "Task not found"}
         ip = getattr(task, "instance_ip", None)
         pipeline_images = getattr(self, "_last_pipeline_images", {})
-        # Build image URLs through orchestrator proxy
-        image_urls = {"chunks": [], "merged": None}
-        if ip and pipeline_images:
+        local_images = getattr(task, "local_images", None)
+        # Build image URLs - prefer local (downloaded) over remote (SCP)
+        image_urls = {"chunks": [], "merged": None, "merged_preview": None}
+        if local_images:
+            for chunk in local_images.get("chunks", []):
+                image_urls["chunks"].append({
+                    "name": chunk["name"],
+                    "url": f"/api/benchmark/{task.task_id}/local-image?name={chunk['name']}.jpg",
+                    "size_bytes": chunk.get("size_bytes", 0),
+                })
+            if local_images.get("merged"):
+                image_urls["merged"] = {
+                    "url": f"/api/benchmark/{task.task_id}/local-image?name=mosaic_merged.jpg",
+                    "size_bytes": local_images["merged"].get("size_bytes", 0),
+                    "download_url": f"/api/benchmark/{task.task_id}/local-image?name=mosaic_merged.jpg&download=1",
+                }
+            if local_images.get("merged_preview"):
+                image_urls["merged_preview"] = {
+                    "url": f"/api/benchmark/{task.task_id}/local-image?name=mosaic_merged_preview.jpg",
+                    "size_bytes": local_images["merged_preview"].get("size_bytes", 0),
+                }
+        elif ip and pipeline_images:
             import urllib.parse
             for chunk in pipeline_images.get("chunks", []):
                 image_urls["chunks"].append({
@@ -612,6 +718,26 @@ async def create_app():
     app.router.add_get("/api/benchmark/{task_id}/logs", handle_instance_logs)
     app.router.add_post("/api/benchmark/{task_id}/terminate", handle_terminate_instance)
     app.router.add_get("/api/benchmark/{task_id}/image", handle_instance_image)
+    async def handle_local_image(request):
+        task_id = request.match_info["task_id"]
+        task = orchestrator.tasks.get(task_id)
+        if not task or not getattr(task, "local_images", None):
+            resp = web.json_response({"error": "No local images"}, status=404)
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            return resp
+        name = request.query.get("name", "")
+        local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task_id}")
+        file_path = os.path.join(local_dir, name)
+        if not os.path.exists(file_path):
+            resp = web.json_response({"error": "File not found"}, status=404)
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            return resp
+        resp = web.FileResponse(file_path)
+        if request.query.get("download"):
+            resp.headers['Content-Disposition'] = 'attachment; filename="mosaic_merged.jpg"'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    app.router.add_get("/api/benchmark/{task_id}/local-image", handle_local_image)
     app.router.add_post("/api/instances/cleanup", handle_cleanup)
     app.router.add_get("/health", lambda r: web.json_response({"status": "ok"}, headers={"Access-Control-Allow-Origin": "*"}))
 
