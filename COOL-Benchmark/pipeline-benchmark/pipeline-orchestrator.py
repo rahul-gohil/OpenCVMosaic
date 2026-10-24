@@ -301,32 +301,41 @@ class PipelineOrchestrator:
             async with session.post(
                 f"http://{ip}:8080/run-pipeline",
                 json={"chunk_size": chunk_size},
-                timeout=aiohttp.ClientTimeout(total=30),
+                timeout=aiohttp.ClientTimeout(total=60),
             ) as resp:
                 if resp.status not in (200, 202):
                     text = await resp.text()
                     raise Exception(f"Failed to start pipeline: {text}")
 
             # Poll for completion
+            consecutive_errors = 0
             while True:
                 await _asyncio.sleep(5)
-                async with session.get(
-                    f"http://{ip}:8080/pipeline-status",
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    data = await resp.json()
-                    status = data.get("status", "unknown")
-                    progress = data.get("progress", {})
-                    self._last_pipeline_images = data.get("images", {})
-                    self._last_pipeline_stage = progress.get("current_step", "")
-                    self._last_pipeline_pct = progress.get("progress_percent", 0)
+                try:
+                    async with session.get(
+                        f"http://{ip}:8080/pipeline-status",
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as resp:
+                        data = await resp.json()
+                        consecutive_errors = 0
+                        status = data.get("status", "unknown")
+                        progress = data.get("progress", {})
+                        self._last_pipeline_images = data.get("images", {})
+                        self._last_pipeline_stage = progress.get("current_step", "")
+                        self._last_pipeline_pct = progress.get("progress_percent", 0)
 
-                    if status == "completed":
-                        metrics = data.get("metrics", {})
-                        metrics["per_stage_timings"] = metrics.get("per_stage_timings", {})
-                        return metrics
-                    elif status == "failed":
-                        raise Exception(data.get("error", "Pipeline failed"))
+                        if status == "completed":
+                            metrics = data.get("metrics", {})
+                            metrics["per_stage_timings"] = metrics.get("per_stage_timings", {})
+                            metrics["merge_stage_timings"] = metrics.get("merge_stage_timings", {})
+                            return metrics
+                        elif status == "failed":
+                            raise Exception(data.get("error", "Pipeline failed"))
+                except Exception as e:
+                    consecutive_errors += 1
+                    logger.warning(f"Poll error ({consecutive_errors}/5): {e}")
+                    if consecutive_errors >= 5:
+                        raise Exception(f"Lost connection to instance after 5 retries: {e}")
 
     async def _reconfigure_to_pip(self, ip: str):
         pip_version = "5.0.0.93"

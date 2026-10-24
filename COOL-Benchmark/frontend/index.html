@@ -171,6 +171,7 @@
         let logInterval = null;
         let currentMode = 'diy';
         let currentKeyPath = '~/.ssh/mosaic-key.pem';
+        let usingLocalImages = false;
 
         function log(msg) {
             const el = document.getElementById("log");
@@ -291,6 +292,13 @@
         function updateImageGallery(images) {
             const gallery = document.getElementById("strips-gallery");
             const mergedDiv = document.getElementById("merged-preview");
+            // If we just switched to local images, clear the gallery
+            const isLocal = images.chunks.length > 0 && images.chunks[0].url.includes("local-image");
+            if (isLocal && !usingLocalImages) {
+                usingLocalImages = true;
+                gallery.innerHTML = "";
+                mergedDiv.innerHTML = "";
+            }
             const existingNames = new Set(Array.from(gallery.querySelectorAll("img")).map(i => i.dataset.name));
 
             // Add new strip thumbnails
