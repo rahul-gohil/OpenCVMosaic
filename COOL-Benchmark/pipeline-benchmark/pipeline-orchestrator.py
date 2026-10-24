@@ -76,6 +76,7 @@ class PipelineBenchmarkTask:
     mode: str = "diy"
     instance_id: Optional[str] = None
     instance_ip: Optional[str] = None
+    ssh_user: str = "ec2-user"
     local_images: Optional[Dict[str, str]] = None
     build_progress: Optional[Dict[str, Any]] = None
     end_time: Optional[float] = None
@@ -160,6 +161,7 @@ class PipelineOrchestrator:
                 # DIY-only: use standard Graviton AMI with pip OpenCV
                 ami_id = self.diy_ami_id
                 user_data = self._get_diy_user_data()
+                task.ssh_user = "ec2-user"
                 logger.info(f"DIY mode: using standard Graviton AMI {ami_id}")
             elif mode == "cool":
                 # COOL-only: use COOL marketplace AMI
@@ -167,6 +169,7 @@ class PipelineOrchestrator:
                 if not ami_id or ami_id.startswith("ami-to-be"):
                     raise ValueError("Marketplace AMI not configured. Set MARKETPLACE_AMI_ID or config-marketplace.json")
                 user_data = self._get_user_data()
+                task.ssh_user = "ubuntu"
                 logger.info(f"COOL mode: using marketplace AMI {ami_id}")
             else:
                 # Compare mode: use COOL marketplace AMI (runs both)
@@ -174,6 +177,7 @@ class PipelineOrchestrator:
                 if not ami_id or ami_id.startswith("ami-to-be"):
                     raise ValueError("Marketplace AMI not configured. Set MARKETPLACE_AMI_ID or config-marketplace.json")
                 user_data = self._get_user_data()
+                task.ssh_user = "ubuntu"
                 logger.info(f"Compare mode: using marketplace AMI {ami_id}")
 
             # Launch instance
@@ -347,6 +351,7 @@ class PipelineOrchestrator:
         """Download pipeline results from instance to local machine before termination."""
         import subprocess, os as _os, tempfile
         key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
+        ssh_user = getattr(task, "ssh_user", "ec2-user")
         local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task.task_id}")
         os.makedirs(local_dir, exist_ok=True)
         task.local_images = {"chunks": [], "merged": None, "merged_preview": None}
@@ -363,7 +368,7 @@ class PipelineOrchestrator:
             try:
                 proc = subprocess.run(
                     ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                     f"ec2-user@{ip}:{remote_path}", local_path],
+                     f"{ssh_user}@{ip}:{remote_path}", local_path],
                     capture_output=True, text=True, timeout=60
                 )
                 if proc.returncode == 0 and _os.path.exists(local_path):
@@ -382,7 +387,7 @@ class PipelineOrchestrator:
             try:
                 proc = subprocess.run(
                     ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                     f"ec2-user@{ip}:{remote_path}", local_path],
+                     f"{ssh_user}@{ip}:{remote_path}", local_path],
                     capture_output=True, text=True, timeout=120
                 )
                 if proc.returncode == 0 and _os.path.exists(local_path):
@@ -400,7 +405,7 @@ class PipelineOrchestrator:
             try:
                 proc = subprocess.run(
                     ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                     f"ec2-user@{ip}:{remote_path}", local_path],
+                     f"{ssh_user}@{ip}:{remote_path}", local_path],
                     capture_output=True, text=True, timeout=60
                 )
                 if proc.returncode == 0 and _os.path.exists(local_path):
@@ -643,12 +648,13 @@ async def create_app():
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
         ip = task.instance_ip
+        ssh_user = getattr(task, "ssh_user", "ec2-user")
         import subprocess
         key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
         try:
             proc = subprocess.run(
                 ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
-                 "-i", key_path, f"ec2-user@{ip}",
+                 "-i", key_path, f"{ssh_user}@{ip}",
                  "sudo tail -50 /var/log/pipeline-mcp.log 2>/dev/null || echo 'No log file'"],
                 capture_output=True, text=True, timeout=15
             )
@@ -683,6 +689,7 @@ async def create_app():
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
         ip = task.instance_ip
+        ssh_user = getattr(task, "ssh_user", "ec2-user")
         import urllib.parse
         img_path = urllib.parse.unquote(request.query.get("path", ""))
         if not img_path:
@@ -696,7 +703,7 @@ async def create_app():
         try:
             proc = subprocess.run(
                 ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                 f"ec2-user@{ip}:{img_path}", tmp],
+                 f"{ssh_user}@{ip}:{img_path}", tmp],
                 capture_output=True, text=True, timeout=60
             )
             if proc.returncode != 0 or not _os.path.exists(tmp):
