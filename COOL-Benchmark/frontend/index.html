@@ -67,21 +67,19 @@
             <div class="form-row">
                 <label>Instance Type:</label>
                 <select id="instance-type">
-                    <option value="m7g.large">m7g.large (Graviton3)</option>
-                    <option value="m7g.xlarge">m7g.xlarge (Graviton3)</option>
-                    <option value="m7g.2xlarge">m7g.2xlarge (Graviton3)</option>
-                    <option value="m7g.xlarge" selected>m7g.xlarge (Graviton3, 4 vCPU)</option>
-                    <option value="m8g.large">m8g.large (Graviton4)</option>
-                    <option value="m8g.xlarge">m8g.xlarge (Graviton4)</option>
-                    <option value="m8g.2xlarge">m8g.2xlarge (Graviton4)</option>
-                    <option value="m8g.4xlarge">m8g.4xlarge (Graviton4)</option>
-                    <option value="m9g.large">m9g.large (Graviton5 - COOL AMI only)</option>
-                    <option value="m9g.xlarge">m9g.xlarge (Graviton5 - COOL AMI only)</option>
-                    <option value="m9g.4xlarge">m9g.4xlarge (Graviton5 - COOL AMI only)</option>
+                    <option value="m7g.large">m7g.large (2 vCPU)</option>
+                    <option value="m7g.xlarge" selected>m7g.xlarge (4 vCPU)</option>
+                    <option value="m7g.2xlarge">m7g.2xlarge (8 vCPU)</option>
+                    <option value="m8g.large">m8g.large (2 vCPU)</option>
+                    <option value="m8g.xlarge">m8g.xlarge (4 vCPU)</option>
+                    <option value="m8g.2xlarge">m8g.2xlarge (8 vCPU)</option>
+                    <option value="m9g.large">m9g.large (2 vCPU, COOL AMI only)</option>
+                    <option value="m9g.xlarge">m9g.xlarge (4 vCPU, COOL AMI only)</option>
+                    <option value="m9g.2xlarge">m9g.2xlarge (8 vCPU, COOL AMI only)</option>
                 </select>
             </div>
             <div style="font-size:0.8em;color:#718096;margin-bottom:12px;margin-left:132px;">
-                Note: m7g.xlarge = 4 vCPU, m7g.2xlarge = 8 vCPU (account limit). m7g.4xlarge = 16 vCPU (exceeds limit).
+                All types shown are within the 8 vCPU account limit.
             </div>
             <div class="form-row" id="ami-row">
                 <label>AMI ID:</label>
