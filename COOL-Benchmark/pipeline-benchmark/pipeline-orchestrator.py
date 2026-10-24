@@ -355,6 +355,19 @@ class PipelineOrchestrator:
         ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-i", key_path,
                    f"ubuntu@{ip}", " && ".join(commands)]
         subprocess.run(ssh_cmd, check=True, timeout=120)
+        # Wait for MCP server to be ready again
+        import asyncio
+        for i in range(30):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(f"http://{ip}:8080/health", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        if resp.status == 200:
+                            logger.info(f"MCP server ready after reconfigure on {ip}")
+                            return
+            except Exception:
+                pass
+            await asyncio.sleep(5)
+        raise Exception("MCP server not ready after reconfigure")
 
     async def _download_results_locally(self, task, ip: str):
         """Download pipeline results from instance to local machine before termination."""

@@ -255,7 +255,7 @@ async def handle_health(request):
 
 async def handle_start_pipeline(request):
     global pipeline_state
-    if pipeline_state["status"] == "running":
+    if _get_state("status") == "running":
         return web.json_response({"error": "Pipeline already running"}, status=409)
 
     data = await asyncio.wait_for(request.json(), timeout=60)
