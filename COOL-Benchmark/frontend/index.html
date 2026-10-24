@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenCVMosaic Pipeline Benchmark</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #2d3748; }
+        .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+        h1 { color: #2d3748; margin-bottom: 8px; }
+        .subtitle { color: #718096; margin-bottom: 24px; }
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .card h2 { font-size: 1.1em; margin-bottom: 12px; color: #4a5568; }
+        .form-row { display: flex; gap: 12px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+        .form-row label { font-weight: 600; min-width: 120px; }
+        .form-row input, .form-row select { flex: 1; padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 0.95em; min-width: 200px; }
+        .btn { padding: 10px 24px; border: none; border-radius: 6px; font-size: 1em; cursor: pointer; font-weight: 600; }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-primary:hover { background: #5a67d8; }
+        .btn-primary:disabled { background: #a0aec0; cursor: not-allowed; }
+        .btn-danger { background: #e53e3e; color: white; }
+        .status { padding: 12px; border-radius: 6px; margin-bottom: 12px; }
+        .status.running { background: #ebf8ff; color: #2b6cb0; }
+        .status.completed { background: #f0fff4; color: #276749; }
+        .status.failed { background: #fff5f5; color: #c53030; }
+        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .metrics-grid.single { grid-template-columns: 1fr; max-width: 450px; margin: 0 auto; }
+        .metric-card { background: #f7fafc; border-radius: 6px; padding: 12px; }
+        .metric-card h3 { font-size: 0.9em; color: #718096; margin-bottom: 8px; }
+        .metric-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #e2e8f0; }
+        .metric-row:last-child { border-bottom: none; }
+        .metric-label { color: #4a5568; }
+        .metric-value { font-weight: 600; color: #2d3748; }
+        .speedup { font-size: 1.2em; color: #38a169; font-weight: 700; }
+        .progress-bar { height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+        .progress-fill { height: 100%; background: #667eea; transition: width 0.3s; }
+        #log { background: #1a202c; color: #e2e8f0; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.85em; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+        .image-gallery { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+        .image-gallery img { width: 120px; height: 80px; object-fit: cover; border-radius: 4px; border: 1px solid #e2e8f0; cursor: pointer; }
+        .image-gallery img:hover { border-color: #667eea; }
+        .stage-timings { background: #f7fafc; border-radius: 6px; padding: 12px; margin-top: 8px; }
+        .stage-timings h4 { font-size: 0.85em; color: #718096; margin-bottom: 6px; }
+        .stage-row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 0.9em; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>OpenCVMosaic Pipeline Benchmark</h1>
+        <p class="subtitle">Run OpenCVMosaic pipeline on AWS Graviton — DIY (pip) or COOL (marketplace) OpenCV</p>
+
+        <div class="card">
+            <h2>Configuration</h2>
+            <div class="form-row">
+                <label>S3 Input:</label>
+                <input type="text" id="s3-input" value="s3://your-bucket/inputs/pistachio" placeholder="s3://bucket/inputs/pistachio">
+            </div>
+            <div class="form-row">
+                <label>S3 Output:</label>
+                <input type="text" id="s3-output" value="s3://your-bucket/benchmark_results" placeholder="s3://bucket/benchmark_results">
+            </div>
+            <div class="form-row">
+                <label>Chunk Size:</label>
+                <input type="number" id="chunk-size" value="18" min="1" max="100">
+            </div>
+            <div class="form-row">
+                <label>Mode:</label>
+                <select id="mode">
+                    <option value="diy" selected>DIY Only (pip OpenCV — no AMI needed)</option>
+                    <option value="cool">COOL Only (requires COOL AMI)</option>
+                    <option value="compare">Compare (requires COOL AMI)</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <label>Instance Type:</label>
+                <select id="instance-type">
+                    <option value="m7g.large">m7g.large (Graviton3)</option>
+                    <option value="m7g.xlarge">m7g.xlarge (Graviton3)</option>
+                    <option value="m7g.2xlarge">m7g.2xlarge (Graviton3)</option>
+                    <option value="m7g.4xlarge" selected>m7g.4xlarge (Graviton3)</option>
+                    <option value="m8g.large">m8g.large (Graviton4)</option>
+                    <option value="m8g.xlarge">m8g.xlarge (Graviton4)</option>
+                    <option value="m8g.2xlarge">m8g.2xlarge (Graviton4)</option>
+                    <option value="m8g.4xlarge">m8g.4xlarge (Graviton4)</option>
+                    <option value="m9g.large">m9g.large (Graviton5 - COOL AMI only)</option>
+                    <option value="m9g.xlarge">m9g.xlarge (Graviton5 - COOL AMI only)</option>
+                    <option value="m9g.4xlarge">m9g.4xlarge (Graviton5 - COOL AMI only)</option>
+                </select>
+            </div>
+            <div class="form-row" id="ami-row">
+                <label>AMI ID:</label>
+                <input type="text" id="ami-id" value="" placeholder="ami-xxxxxxxxx (COOL Graviton5, optional for DIY)">
+            </div>
+            <div class="form-row">
+                <button class="btn btn-primary" id="run-btn" onclick="runBenchmark()">Run Benchmark</button>
+                <button class="btn btn-danger" id="stop-btn" onclick="stopBenchmark()" disabled>Stop</button>
+            </div>
+        </div>
+
+        <div class="card hidden" id="status-card">
+            <h2>Status</h2>
+            <div class="status" id="status-text">Initializing...</div>
+            <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width: 0%"></div></div>
+        </div>
+
+        <div class="card hidden" id="instance-card">
+            <h2>Instance Info</h2>
+            <div class="metric-row"><span class="metric-label">Instance ID</span><span class="metric-value" id="inst-id">-</span></div>
+            <div class="metric-row"><span class="metric-label">Public IP</span><span class="metric-value" id="inst-ip">-</span></div>
+            <div class="metric-row"><span class="metric-label">Instance Type</span><span class="metric-value" id="inst-type">-</span></div>
+            <div class="metric-row"><span class="metric-label">SSH Command</span><span class="metric-value" id="inst-ssh" style="font-size:0.8em;word-break:break-all;">-</span></div>
+            <div style="margin-top:12px;">
+                <button class="btn btn-danger" id="terminate-btn" onclick="terminateInstance()" style="font-size:0.85em;padding:6px 12px;">Terminate Instance</button>
+                <button class="btn btn-primary" id="logs-btn" onclick="fetchLogs()" style="font-size:0.85em;padding:6px 12px;margin-left:8px;">Fetch Logs</button>
+            </div>
+            <div id="instance-logs" style="margin-top:12px;background:#1a202c;color:#e2e8f0;padding:12px;border-radius:6px;font-family:monospace;font-size:0.8em;max-height:200px;overflow-y:auto;white-space:pre-wrap;display:none;"></div>
+        </div>
+
+        <div class="card hidden" id="images-card">
+            <h2>Generated Strips & Merged Result</h2>
+            <div id="strips-gallery" class="image-gallery"></div>
+            <div id="merged-preview" style="margin-top:12px;text-align:center;"></div>
+            <div id="stage-timings" class="stage-timings" style="display:none;">
+                <h4>Per-Stage Timings (cumulative)</h4>
+                <div id="stage-rows"></div>
+            </div>
+        </div>
+
+        <div class="card hidden" id="results-card">
+            <h2>Results</h2>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <h3>COOL (OpenCV 5.1.0)</h3>
+                    <div id="cool-metrics"></div>
+                </div>
+                <div class="metric-card">
+                    <h3>DIY (OpenCV 5.0.0)</h3>
+                    <div id="diy-metrics"></div>
+                </div>
+            </div>
+            <div style="text-align: center; margin-top: 16px;">
+                <span class="speedup" id="speedup-text"></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Log</h2>
+            <div id="log"></div>
+        </div>
+    </div>
+
+    <script>
+        const API = "";  // same origin when served by orchestrator
+
+        // Prefill S3 paths from server config
+        (async function loadConfig() {
+            try {
+                const resp = await fetch(API + "/api/config");
+                const cfg = await resp.json();
+                if (cfg.s3_input) document.getElementById("s3-input").value = cfg.s3_input;
+                if (cfg.s3_output) document.getElementById("s3-output").value = cfg.s3_output;
+                if (cfg.ami_id) document.getElementById("ami-id").value = cfg.ami_id;
+            } catch (e) { /* ignore */ }
+        })();
+        let currentTaskId = null;
+        let pollInterval = null;
+        let logInterval = null;
+        let currentMode = 'diy';
+
+        function log(msg) {
+            const el = document.getElementById("log");
+            el.textContent += msg + "\n";
+            el.scrollTop = el.scrollHeight;
+        }
+
+        async function runBenchmark() {
+            const s3Input = document.getElementById("s3-input").value;
+            const s3Output = document.getElementById("s3-output").value;
+            const chunkSize = parseInt(document.getElementById("chunk-size").value);
+            const instanceType = document.getElementById("instance-type").value;
+            const mode = document.getElementById("mode").value;
+            const amiId = document.getElementById("ami-id").value;
+
+            if (mode !== "diy" && !amiId) {
+                alert("Please enter the COOL AMI ID for COOL/Compare mode");
+                return;
+            }
+
+            currentMode = mode;
+            document.getElementById("run-btn").disabled = true;
+            document.getElementById("stop-btn").disabled = false;
+            document.getElementById("status-card").classList.remove("hidden");
+            document.getElementById("instance-card").classList.remove("hidden");
+            document.getElementById("results-card").classList.add("hidden");
+            document.getElementById("instance-logs").style.display = "none";
+            document.getElementById("log").textContent = "";
+
+            log("Starting benchmark...");
+
+            try {
+                const resp = await fetch(API + "/api/benchmark/run", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        instanceType: instanceType,
+                        maxInstances: 1,
+                        chunkSize: chunkSize,
+                        s3Input: s3Input,
+                        s3Output: s3Output,
+                        opencvVersion: "5",
+                        mode: mode
+                    })
+                });
+                const data = await resp.json();
+                if (data.error) throw new Error(data.error);
+                currentTaskId = data.taskId;
+                log("Task started: " + currentTaskId);
+                pollStatus();
+                startLogPolling();
+            } catch (e) {
+                log("Error: " + e.message);
+                document.getElementById("run-btn").disabled = false;
+                document.getElementById("stop-btn").disabled = true;
+            }
+        }
+
+        function pollStatus() {
+            pollInterval = setInterval(async () => {
+                try {
+                    const resp = await fetch(API + "/api/benchmark/" + currentTaskId + "/status");
+                    const data = await resp.json();
+
+                    const status = data.status || "unknown";
+                    const progress = data.build_progress || {};
+                    const pct = progress.progress_percent || 0;
+                    const step = progress.current_step || status;
+
+                    document.getElementById("status-text").textContent = step + " (" + pct + "%)";
+                    document.getElementById("status-text").className = "status " + status;
+                    document.getElementById("progress-fill").style.width = pct + "%";
+
+                    // Show images card once instance is running
+                    if (data.instance_ip && document.getElementById("images-card").classList.contains("hidden")) {
+                        document.getElementById("images-card").classList.remove("hidden");
+                    }
+
+                    // Update images gallery
+                    if (data.pipeline_images) {
+                        updateImageGallery(data.pipeline_images);
+                    }
+
+                    // Update per-stage timings
+                    if (data.results && data.results.diy && data.results.diy.per_stage_timings) {
+                        showStageTimings(data.results.diy.per_stage_timings);
+                    } else if (data.results && data.results.cool && data.results.cool.per_stage_timings) {
+                        showStageTimings(data.results.cool.per_stage_timings);
+                    }
+
+                    // Update instance info
+                    if (data.instance_id) {
+                        document.getElementById("inst-id").textContent = data.instance_id;
+                        document.getElementById("inst-type").textContent = data.instance_type || "-";
+                    }
+                    if (data.instance_ip) {
+                        document.getElementById("inst-ip").textContent = data.instance_ip;
+                        document.getElementById("inst-ssh").textContent =
+                            "ssh -i ~/.ssh/mosaic-key.pem ec2-user@" + data.instance_ip;
+                    }
+
+                    if (status === "completed") {
+                        clearInterval(pollInterval);
+                        stopLogPolling();
+                        showResults(data.results, currentMode);
+                        document.getElementById("run-btn").disabled = false;
+                        document.getElementById("stop-btn").disabled = true;
+                    } else if (status === "failed") {
+                        clearInterval(pollInterval);
+                        stopLogPolling();
+                        log("FAILED: " + (data.error || "unknown error"));
+                        document.getElementById("run-btn").disabled = false;
+                        document.getElementById("stop-btn").disabled = true;
+                    }
+                } catch (e) {
+                    log("Poll error: " + e.message);
+                }
+            }, 5000);
+        }
+
+        function updateImageGallery(images) {
+            const gallery = document.getElementById("strips-gallery");
+            const mergedDiv = document.getElementById("merged-preview");
+            const existingNames = new Set(Array.from(gallery.querySelectorAll("img")).map(i => i.dataset.name));
+
+            // Add new strip thumbnails
+            (images.chunks || []).forEach(chunk => {
+                if (!existingNames.has(chunk.name)) {
+                    const img = document.createElement("img");
+                    img.src = chunk.url;
+                    img.dataset.name = chunk.name;
+                    img.title = chunk.name;
+                    img.onclick = () => window.open(chunk.url, "_blank");
+                    gallery.appendChild(img);
+                }
+            });
+
+            // Show merged result
+            if (images.merged && images.merged.url) {
+                if (!mergedDiv.querySelector("img")) {
+                    const p = document.createElement("p");
+                    p.style.cssText = "font-size:0.85em;color:#718096;margin-bottom:4px;";
+                    p.textContent = "Merged Result:";
+                    const img = document.createElement("img");
+                    img.src = images.merged.url;
+                    img.style.cssText = "max-width:100%;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer;";
+                    img.onclick = () => window.open(images.merged.url, "_blank");
+                    mergedDiv.appendChild(p);
+                    mergedDiv.appendChild(img);
+                }
+            }
+        }
+
+        function showStageTimings(timings) {
+            const el = document.getElementById("stage-timings");
+            const rows = document.getElementById("stage-rows");
+            if (!timings || timings.frames === 0) { el.style.display = "none"; return; }
+            el.style.display = "block";
+            rows.innerHTML = `
+                <div class="stage-row"><span>SIFT</span><span class="metric-value">${timings.sift}s</span></div>
+                <div class="stage-row"><span>Matching</span><span class="metric-value">${timings.matching}s</span></div>
+                <div class="stage-row"><span>Homography</span><span class="metric-value">${timings.homography}s</span></div>
+                <div class="stage-row"><span>Stitching</span><span class="metric-value">${timings.stitching}s</span></div>
+                <div class="stage-row" style="border-top:1px solid #e2e8f0;margin-top:4px;padding-top:4px;"><span>Frames processed</span><span class="metric-value">${timings.frames}</span></div>
+            `;
+        }
+
+        function showResults(results, mode) {
+            // Show stage timings from results
+            const diy = results.diy || {};
+            const cool = results.cool || {};
+            const cmp = results.comparison || {};
+            if (mode === "diy" && diy.per_stage_timings) showStageTimings(diy.per_stage_timings);
+            else if (mode === "cool" && cool.per_stage_timings) showStageTimings(cool.per_stage_timings);
+            else if (mode === "compare" && cool.per_stage_timings) showStageTimings(cool.per_stage_timings);
+            document.getElementById("results-card").classList.remove("hidden");
+            const grid = document.querySelector(".metrics-grid");
+
+            function metricCard(id, m, title) {
+                const el = document.getElementById(id);
+                const parent = el.parentElement;
+                if (title) parent.querySelector("h3").textContent = title;
+                el.innerHTML = `
+                    <div class="metric-row"><span class="metric-label">Total time</span><span class="metric-value">${m.total_time_s || '-'}s</span></div>
+                    <div class="metric-row"><span class="metric-label">Download time</span><span class="metric-value">${m.download_time_s || '-'}s</span></div>
+                    <div class="metric-row"><span class="metric-label">Stitch time</span><span class="metric-value">${m.stitch_time_s || '-'}s</span></div>
+                    <div class="metric-row"><span class="metric-label">Merge time</span><span class="metric-value">${m.merge_time_s || '-'}s</span></div>
+                    <div class="metric-row"><span class="metric-label">Upload time</span><span class="metric-value">${m.upload_time_s || '-'}s</span></div>
+                    <div class="metric-row"><span class="metric-label">Canvas</span><span class="metric-value">${m.canvas_mpx || '-'} Mpx</span></div>
+                    <div class="metric-row"><span class="metric-label">Content</span><span class="metric-value">${m.content_pct || '-'}%</span></div>
+                    <div class="metric-row"><span class="metric-label">OpenCV</span><span class="metric-value">${m.opencv_version || '-'}${m.is_cool ? ' (COOL)' : ' (pip)'}</span></div>
+                `;
+            }
+
+            const coolCard = document.getElementById("cool-metrics").parentElement;
+            const diyCard = document.getElementById("diy-metrics").parentElement;
+
+            if (mode === "diy") {
+                coolCard.style.display = "none";
+                diyCard.style.display = "block";
+                grid.classList.add("single");
+                metricCard("diy-metrics", diy, "DIY (OpenCV pip)");
+            } else if (mode === "cool") {
+                coolCard.style.display = "block";
+                diyCard.style.display = "none";
+                grid.classList.add("single");
+                metricCard("cool-metrics", cool, "COOL (OpenCV marketplace)");
+            } else {
+                coolCard.style.display = "block";
+                diyCard.style.display = "block";
+                grid.classList.remove("single");
+                metricCard("cool-metrics", cool, "COOL (OpenCV 5.1.0)");
+                metricCard("diy-metrics", diy, "DIY (OpenCV 5.0.0)");
+                if (cmp.speedup) {
+                    document.getElementById("speedup-text").textContent =
+                        "COOL is " + cmp.speedup + "x faster (saved " + cmp.time_saved_s + "s)";
+                } else {
+                    document.getElementById("speedup-text").textContent = "";
+                }
+            }
+        }
+
+        async function terminateInstance() {
+            if (!currentTaskId) return;
+            if (!confirm("Terminate the EC2 instance?")) return;
+            try {
+                const resp = await fetch(API + "/api/benchmark/" + currentTaskId + "/terminate", { method: "POST" });
+                const data = await resp.json();
+                log(data.message || data.error || "Done");
+            } catch (e) {
+                log("Terminate error: " + e.message);
+            }
+        }
+
+        async function fetchLogs() {
+            if (!currentTaskId) return;
+            const el = document.getElementById("instance-logs");
+            el.style.display = "block";
+            el.textContent = "Loading...";
+            try {
+                const resp = await fetch(API + "/api/benchmark/" + currentTaskId + "/logs");
+                const data = await resp.json();
+                el.textContent = data.logs || data.error || "No logs";
+            } catch (e) {
+                el.textContent = "Error: " + e.message;
+            }
+        }
+
+        // Auto-refresh logs every 10s while running
+        function startLogPolling() {
+            if (logInterval) clearInterval(logInterval);
+            logInterval = setInterval(fetchLogs, 10000);
+        }
+
+        function stopLogPolling() {
+            if (logInterval) { clearInterval(logInterval); logInterval = null; }
+        }
+
+        async function stopBenchmark() {
+            if (currentTaskId) {
+                clearInterval(pollInterval);
+                stopLogPolling();
+                log("Benchmark stopped by user");
+                document.getElementById("run-btn").disabled = false;
+                document.getElementById("stop-btn").disabled = true;
+            }
+        }
+    </script>
+</body>
+</html>

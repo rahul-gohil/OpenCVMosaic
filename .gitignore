@@ -1,0 +1,22 @@
+# Environment variables
+.env
+.env.local
+
+# AWS credentials
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+
+# Outputs
+outputs/
+datasets
+
+# Papers (large PDFs)
+Papers/
+
+# Logs
+*.log
