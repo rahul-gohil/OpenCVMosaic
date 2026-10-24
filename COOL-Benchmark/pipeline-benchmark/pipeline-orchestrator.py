@@ -447,7 +447,7 @@ if [ ! -d "/opt/OpenCVMosaic" ]; then
 fi
 cd /opt/OpenCVMosaic
 source /opt/cool/venvs/python_3.12/bin/activate
-pip install --quiet numpy scipy
+pip install --quiet numpy scipy aiohttp
 cp /opt/OpenCVMosaic/COOL-Benchmark/opencv-ami/pipeline-mcp-server.py /opt/pipeline-mcp-server.py
 # Start the pipeline MCP server as a systemd service
 cat > /etc/systemd/system/pipeline-mcp.service << 'EOF'
@@ -460,6 +460,8 @@ Type=simple
 User=ubuntu
 Environment=PYTHON=/opt/cool/venvs/python_3.12/bin/python
 Environment=PIPELINE_DIR=/opt/OpenCVMosaic
+Environment=LD_LIBRARY_PATH=/opt/cool/cpp_sdk/lib:/opt/ffmpeg/lib
+Environment=PYTHONPATH=/opt/cool/python_3.12/site-packages/
 ExecStart=/opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py
 Restart=always
 RestartSec=5
