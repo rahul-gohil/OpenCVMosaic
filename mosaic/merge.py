@@ -163,8 +163,8 @@ def stitch(a_img, a_mask, b_img, b_mask, features, detect_px, work_dir,
     fs_b = FeatureSet(points=fb.points / scale, descriptors=fb.descriptors)
     sift_time = _time.perf_counter() - _t_sift
 
-    knn = matcher.knn_match(fa.descriptors, fb.descriptors)
     _t_match = _time.perf_counter()
+    knn = matcher.knn_match(fa.descriptors, fb.descriptors)
     _t_homography = 0.0
     best = None
     for ratio in matcher.config.ratio_ladder:
