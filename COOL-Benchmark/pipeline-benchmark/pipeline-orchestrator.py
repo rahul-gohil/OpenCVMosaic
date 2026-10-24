@@ -341,12 +341,13 @@ class PipelineOrchestrator:
                         raise Exception(f"Lost connection to instance after 5 retries: {e}")
 
     async def _reconfigure_to_pip(self, ip: str):
-        # Switch from COOL to DIY: just change PYTHONPATH (no reinstall needed)
-        # COOL mode uses COOL's OpenCV via PYTHONPATH; DIY mode uses pip's OpenCV
+        # Switch from COOL to DIY: rewrite wrapper to NOT include COOL's site-packages
+        # Also remove any .pth files that might add COOL's packages to the venv
         commands = [
             "sudo systemctl stop pipeline-mcp 2>/dev/null || true",
-            # Rewrite wrapper script to remove COOL's PYTHONPATH
-            "sudo sed -i 's|export PYTHONPATH=/opt/cool/python_3.12/site-packages/:$PYTHONPATH|# PYTHONPATH cleared - uses pip OpenCV from venv|' /opt/run-mcp.sh",
+            # Rewrite wrapper script using printf (no heredoc issues with &&)
+            "printf '%s\n' '#!/bin/bash' 'export LD_LIBRARY_PATH=/opt/cool/cpp_sdk/lib:/opt/ffmpeg/lib:$LD_LIBRARY_PATH' 'exec /opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py' | sudo tee /opt/run-mcp.sh > /dev/null",
+            "sudo chmod +x /opt/run-mcp.sh",
             # Remove COOL's site-packages from systemd service
             "sudo sed -i 's|Environment=PYTHONPATH=/opt/cool/python_3.12/site-packages/|Environment=PYTHONPATH=|' /etc/systemd/system/pipeline-mcp.service",
             "sudo systemctl daemon-reload",
@@ -354,22 +355,27 @@ class PipelineOrchestrator:
         ]
         import subprocess
         key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
+        ssh_user = "ubuntu"
         ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                   f"ubuntu@{ip}", " && ".join(commands)]
+                   f"{ssh_user}@{ip}", " && ".join(commands)]
         subprocess.run(ssh_cmd, check=True, timeout=120)
-        # Wait for MCP server to be ready again
+        # Wait for MCP server to be ready in DIY mode
         import asyncio
         for i in range(30):
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(f"http://{ip}:8080/health", timeout=aiohttp.ClientTimeout(total=5)) as resp:
                         if resp.status == 200:
-                            logger.info(f"MCP server ready after reconfigure on {ip}")
-                            return
+                            data = await resp.json()
+                            if not data.get("is_cool", True):
+                                logger.info(f"MCP server ready in DIY mode (OpenCV {data.get('opencv_version')}) on {ip}")
+                                return
+                            else:
+                                logger.warning(f"MCP server still in COOL mode, retrying... (is_cool={data.get('is_cool')})")
             except Exception:
                 pass
             await asyncio.sleep(5)
-        raise Exception("MCP server not ready after reconfigure")
+        raise Exception("MCP server not ready in DIY mode after reconfigure")
 
     async def _download_results_locally(self, task, ip: str):
         """Download pipeline results from instance to local machine before termination."""
