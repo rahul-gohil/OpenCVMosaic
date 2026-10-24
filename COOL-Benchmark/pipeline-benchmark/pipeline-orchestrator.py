@@ -292,12 +292,7 @@ class PipelineOrchestrator:
             task.end_time = time.time()
         finally:
             if instance_id:
-                # Ensure terminated (download already done above)
-                try:
-                    await self.instance_manager.terminate_instance(instance_id)
-                    logger.info(f"Terminated instance {instance_id}")
-                except Exception as e:
-                    logger.warning(f"Could not terminate instance {instance_id}: {e}")
+                logger.info(f"Instance {instance_id} left running for debugging (auto-terminate disabled)")
 
     async def _run_pipeline_on_instance(self, ip: str, chunk_size: int) -> dict:
         import asyncio as _asyncio
