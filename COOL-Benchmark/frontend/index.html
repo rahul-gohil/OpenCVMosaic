@@ -334,13 +334,21 @@
             const mergeEl = document.getElementById("merge-timing");
             if (!timings || timings.frames === 0) { el.style.display = "none"; return; }
             el.style.display = "block";
-            const chunkTotal = (timings.sift + timings.matching + timings.homography + timings.stitching).toFixed(2);
+            const load = timings.load || 0;
+            const sift = timings.sift || 0;
+            const matching = timings.matching || 0;
+            const homography = timings.homography || 0;
+            const stitching = timings.stitching || 0;
+            const saving = timings.saving || 0;
+            const chunkTotal = (load + sift + matching + homography + stitching + saving).toFixed(2);
             rows.innerHTML = `
                 <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
-                    <tr><td style="padding:2px 0;">SIFT</td><td style="text-align:right;font-weight:600;">${timings.sift}s</td></tr>
-                    <tr><td style="padding:2px 0;">Matching</td><td style="text-align:right;font-weight:600;">${timings.matching}s</td></tr>
-                    <tr><td style="padding:2px 0;">Homography</td><td style="text-align:right;font-weight:600;">${timings.homography}s</td></tr>
-                    <tr><td style="padding:2px 0;">Stitching</td><td style="text-align:right;font-weight:600;">${timings.stitching}s</td></tr>
+                    <tr><td style="padding:2px 0;">Load (read image)</td><td style="text-align:right;font-weight:600;">${load.toFixed(2)}s</td></tr>
+                    <tr><td style="padding:2px 0;">SIFT</td><td style="text-align:right;font-weight:600;">${sift.toFixed(2)}s</td></tr>
+                    <tr><td style="padding:2px 0;">Matching</td><td style="text-align:right;font-weight:600;">${matching.toFixed(2)}s</td></tr>
+                    <tr><td style="padding:2px 0;">Homography</td><td style="text-align:right;font-weight:600;">${homography.toFixed(2)}s</td></tr>
+                    <tr><td style="padding:2px 0;">Stitching</td><td style="text-align:right;font-weight:600;">${stitching.toFixed(2)}s</td></tr>
+                    <tr><td style="padding:2px 0;">Saving (write canvas)</td><td style="text-align:right;font-weight:600;">${saving.toFixed(2)}s</td></tr>
                     <tr style="border-top:1px solid #e2e8f0;"><td style="padding:4px 0 2px 0;">Total time</td><td style="text-align:right;padding:4px 0 2px 0;">${chunkTotal}s</td></tr>
                     <tr><td style="padding:2px 0;font-size:0.85em;color:#718096;">Frames processed</td><td style="text-align:right;padding:2px 0;font-size:0.85em;color:#718096;">${timings.frames} (incl. overlap)</td></tr>
                 </table>
@@ -375,19 +383,24 @@
                 if (title) parent.querySelector("h3").textContent = title;
                 const ct = chunkTimings || (m.per_stage_timings || {});
                 const mt = mergeTimings || (m.merge_stage_timings || {});
+                const load = ((ct.load || 0) + (mt.load || 0)).toFixed(2);
                 const sift = ((ct.sift || 0) + (mt.sift || 0)).toFixed(2);
                 const matching = ((ct.matching || 0) + (mt.matching || 0)).toFixed(2);
                 const homography = ((ct.homography || 0) + (mt.homography || 0)).toFixed(2);
                 const stitching = ((ct.stitching || 0) + (mt.stitching || 0)).toFixed(2);
+                const saving = ((ct.saving || 0) + (mt.saving || 0)).toFixed(2);
+                const stageTotal = (parseFloat(load) + parseFloat(sift) + parseFloat(matching) + parseFloat(homography) + parseFloat(stitching) + parseFloat(saving)).toFixed(2);
                 el.innerHTML = `
                     <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
-                        <tr><td style="padding:2px 0;">Total time</td><td style="text-align:right;font-weight:600;">${m.total_time_s || '-'}s</td></tr>
-                        <tr><td style="padding:2px 0;">Chunk time</td><td style="text-align:right;">${m.stitch_time_s || '-'}s</td></tr>
-                        <tr><td style="padding:2px 0;">Merge time</td><td style="text-align:right;">${m.merge_time_s || '-'}s</td></tr>
-                        <tr style="border-top:3px solid #cbd5e0;"><td style="padding:6px 0 2px 0;">SIFT</td><td style="text-align:right;padding:6px 0 2px 0;">${sift}s</td></tr>
+                        <tr><td style="padding:2px 0;">Total time</td><td style="text-align:right;font-weight:600;">${(m.total_time_s || 0).toFixed(2)}s</td></tr>
+                        <tr><td style="padding:2px 0;">Chunk time</td><td style="text-align:right;">${(m.stitch_time_s || 0).toFixed(2)}s</td></tr>
+                        <tr><td style="padding:2px 0;">Merge time</td><td style="text-align:right;">${(m.merge_time_s || 0).toFixed(2)}s</td></tr>
+                        <tr style="border-top:3px solid #cbd5e0;"><td style="padding:6px 0 2px 0;">Load</td><td style="text-align:right;padding:6px 0 2px 0;">${load}s</td></tr>
+                        <tr><td style="padding:2px 0;">SIFT</td><td style="text-align:right;">${sift}s</td></tr>
                         <tr><td style="padding:2px 0;">Matching</td><td style="text-align:right;">${matching}s</td></tr>
                         <tr><td style="padding:2px 0;">Homography</td><td style="text-align:right;">${homography}s</td></tr>
                         <tr><td style="padding:2px 0;">Stitching</td><td style="text-align:right;">${stitching}s</td></tr>
+                        <tr><td style="padding:2px 0;">Saving</td><td style="text-align:right;">${saving}s</td></tr>
                         <tr><td style="padding:2px 0;">Canvas</td><td style="text-align:right;">${m.canvas_mpx || '-'} Mpx</td></tr>
                         <tr><td style="padding:2px 0;">OpenCV</td><td style="text-align:right;">${m.opencv_version || '-'}${m.is_cool ? ' (COOL)' : ' (pip)'}</td></tr>
                     </table>

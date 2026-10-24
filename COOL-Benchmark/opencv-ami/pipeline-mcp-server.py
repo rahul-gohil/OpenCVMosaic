@@ -179,22 +179,24 @@ def _run_pipeline_sync(chunk_size, work_dir):
 
 def _collect_per_stage_timings(work_dir):
     """Read timings.csv from each chunk and aggregate per-stage times."""
-    timings = {"sift": 0.0, "matching": 0.0, "homography": 0.0, "stitching": 0.0, "frames": 0}
+    timings = {"load": 0.0, "sift": 0.0, "matching": 0.0, "homography": 0.0, "stitching": 0.0, "saving": 0.0, "frames": 0}
     chunks_dir = os.path.join(work_dir, "chunks")
     for csv_path in glob.glob(os.path.join(chunks_dir, "chunk_*", "timings.csv")):
         try:
             with open(csv_path) as f:
                 reader = csv.DictReader(f)
                 for row in reader:
+                    timings["load"] += float(row.get("load_time", 0))
                     timings["sift"] += float(row.get("sift_time", 0))
                     timings["matching"] += float(row.get("match_time", 0))
                     timings["homography"] += float(row.get("homography_time", 0))
                     timings["stitching"] += float(row.get("stitch_time", 0))
+                    timings["saving"] += float(row.get("save_time", 0))
                     timings["frames"] += 1
         except Exception as e:
             logger.warning(f"Could not read {csv_path}: {e}")
     # Round values
-    for k in ["sift", "matching", "homography", "stitching"]:
+    for k in ["load", "sift", "matching", "homography", "stitching", "saving"]:
         timings[k] = round(timings[k], 2)
     return timings
 
