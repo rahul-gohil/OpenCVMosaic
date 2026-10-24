@@ -341,15 +341,41 @@ class PipelineOrchestrator:
                         raise Exception(f"Lost connection to instance after 5 retries: {e}")
 
     async def _reconfigure_to_pip(self, ip: str):
-        # Switch from COOL to DIY: rewrite wrapper to NOT include COOL's site-packages
-        # Also remove any .pth files that might add COOL's packages to the venv
+        """Reconfigure from COOL to DIY using system Python + pip OpenCV."""
+        pip_version = "5.0.0.93"
         commands = [
+            'echo "Step 1: Stopping COOL MCP server..."',
             "sudo systemctl stop pipeline-mcp 2>/dev/null || true",
-            # Rewrite wrapper script using printf (no heredoc issues with &&)
-            "printf '%s\n' '#!/bin/bash' 'export LD_LIBRARY_PATH=/opt/cool/cpp_sdk/lib:/opt/ffmpeg/lib:$LD_LIBRARY_PATH' 'exec /opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py' | sudo tee /opt/run-mcp.sh > /dev/null",
-            "sudo chmod +x /opt/run-mcp.sh",
-            # Remove COOL's site-packages from systemd service
-            "sudo sed -i 's|Environment=PYTHONPATH=/opt/cool/python_3.12/site-packages/|Environment=PYTHONPATH=|' /etc/systemd/system/pipeline-mcp.service",
+            "sleep 2",
+            'echo "Step 2: Installing pip + OpenCV via system Python..."',
+            "sudo apt-get update -y -qq",
+            "sudo apt-get install -y -qq python3-pip",
+            f"pip3 install --break-system-packages opencv-python-headless=={pip_version} numpy scipy aiohttp || exit 1",
+            'echo "Step 3: Registering bundled wheel libs..."',
+            'SITE_PKG=$(python3 -c "import site; print(site.getsitepackages()[0])") && '
+            'LDCONF=/etc/ld.so.conf.d/pip-wheel-bundled.conf && '
+            '> "$LDCONF" && '
+            'for D in "$SITE_PKG/numpy.libs" "$SITE_PKG/opencv_python_headless.libs"; do '
+            '  [ -d "$D" ] && echo "$D" >> "$LDCONF"; '
+            'done; '
+            'sudo ldconfig',
+            'echo "Step 4: Switching systemd to DIY (system Python)..."',
+            "sudo bash -c 'cat > /etc/systemd/system/pipeline-mcp.service << EOFSYSTEMD",
+            "[Unit]",
+            "Description=Pipeline MCP Server (DIY pip)",
+            "After=network.target",
+            "",
+            "[Service]",
+            "Type=simple",
+            "User=ubuntu",
+            "Environment=PIPELINE_DIR=/opt/OpenCVMosaic",
+            "ExecStart=/usr/bin/python3 /opt/pipeline-mcp-server.py",
+            "Restart=always",
+            "RestartSec=5",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "EOFSYSTEMD'",
             "sudo systemctl daemon-reload",
             "sudo systemctl restart pipeline-mcp 2>/dev/null || true",
         ]
@@ -358,7 +384,7 @@ class PipelineOrchestrator:
         ssh_user = "ubuntu"
         ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-i", key_path,
                    f"{ssh_user}@{ip}", " && ".join(commands)]
-        subprocess.run(ssh_cmd, check=True, timeout=120)
+        subprocess.run(ssh_cmd, check=True, timeout=300)
         # Wait for MCP server to be ready in DIY mode
         import asyncio
         for i in range(30):
@@ -370,8 +396,6 @@ class PipelineOrchestrator:
                             if not data.get("is_cool", True):
                                 logger.info(f"MCP server ready in DIY mode (OpenCV {data.get('opencv_version')}) on {ip}")
                                 return
-                            else:
-                                logger.warning(f"MCP server still in COOL mode, retrying... (is_cool={data.get('is_cool')})")
             except Exception:
                 pass
             await asyncio.sleep(5)
@@ -476,8 +500,12 @@ if [ ! -d "/opt/OpenCVMosaic" ]; then
     git clone --depth 1 https://github.com/rahul-gohil/OpenCVMosaic.git /opt/OpenCVMosaic
 fi
 cd /opt/OpenCVMosaic
-# Install aiohttp using COOL venv's pip (system pip3 not available)
-/opt/cool/venvs/python_3.12/bin/pip install --quiet numpy scipy aiohttp opencv-python-headless==5.0.0.93
+# Install aiohttp in COOL venv (for MCP server)
+/opt/cool/venvs/python_3.12/bin/pip install --quiet numpy scipy aiohttp
+# Install python3-pip and pip's OpenCV for DIY comparison mode
+sudo apt-get update -y -qq
+sudo apt-get install -y -qq python3-pip
+pip3 install --break-system-packages opencv-python-headless==5.0.0.93 numpy scipy aiohttp
 cp /opt/OpenCVMosaic/COOL-Benchmark/opencv-ami/pipeline-mcp-server.py /opt/pipeline-mcp-server.py
 # Create wrapper script that uses COOL venv Python with COOL's OpenCV
 cat > /opt/run-mcp.sh << 'WRAPPER'
