@@ -115,8 +115,12 @@
             <div id="strips-gallery" class="image-gallery"></div>
             <div id="merged-preview" style="margin-top:12px;text-align:center;"></div>
             <div id="stage-timings" class="stage-timings" style="display:none;">
-                <h4>Per-Stage Timings (cumulative)</h4>
+                <h4>Cumulative Chunk Processing</h4>
                 <div id="stage-rows"></div>
+                <div id="merge-timing" style="margin-top:8px;padding-top:8px;border-top:1px solid #e2e8f0;display:none;">
+                    <h4>Cumulative Merging</h4>
+                    <div class="stage-row"><span>SIFT + Match + Homography + Stitch</span><span class="metric-value" id="merge-time-val">-</span></div>
+                </div>
             </div>
         </div>
 
@@ -239,9 +243,9 @@
 
                     // Update per-stage timings
                     if (data.results && data.results.diy && data.results.diy.per_stage_timings) {
-                        showStageTimings(data.results.diy.per_stage_timings);
+                        showStageTimings(data.results.diy.per_stage_timings, data.results.diy.merge_time_s);
                     } else if (data.results && data.results.cool && data.results.cool.per_stage_timings) {
-                        showStageTimings(data.results.cool.per_stage_timings);
+                        showStageTimings(data.results.cool.per_stage_timings, data.results.cool.merge_time_s);
                     }
 
                     // Update instance info
@@ -317,9 +321,10 @@
             }
         }
 
-        function showStageTimings(timings) {
+        function showStageTimings(timings, mergeTime) {
             const el = document.getElementById("stage-timings");
             const rows = document.getElementById("stage-rows");
+            const mergeEl = document.getElementById("merge-timing");
             if (!timings || timings.frames === 0) { el.style.display = "none"; return; }
             el.style.display = "block";
             rows.innerHTML = `
@@ -330,6 +335,10 @@
                 <div class="stage-row" style="border-top:1px solid #e2e8f0;margin-top:4px;padding-top:4px;"><span>Frames processed</span><span class="metric-value">${timings.frames} (incl. overlap)</span></div>
                 <div style="font-size:0.75em;color:#a0aec0;margin-top:4px;">86 unique images, 4 overlap frames counted twice across 5 chunks</div>
             `;
+            if (mergeTime) {
+                mergeEl.style.display = "block";
+                document.getElementById("merge-time-val").textContent = mergeTime + "s";
+            }
         }
 
         function showResults(results, mode) {
@@ -337,9 +346,9 @@
             const diy = results.diy || {};
             const cool = results.cool || {};
             const cmp = results.comparison || {};
-            if (mode === "diy" && diy.per_stage_timings) showStageTimings(diy.per_stage_timings);
-            else if (mode === "cool" && cool.per_stage_timings) showStageTimings(cool.per_stage_timings);
-            else if (mode === "compare" && cool.per_stage_timings) showStageTimings(cool.per_stage_timings);
+            if (mode === "diy" && diy.per_stage_timings) showStageTimings(diy.per_stage_timings, diy.merge_time_s);
+            else if (mode === "cool" && cool.per_stage_timings) showStageTimings(cool.per_stage_timings, cool.merge_time_s);
+            else if (mode === "compare" && cool.per_stage_timings) showStageTimings(cool.per_stage_timings, cool.merge_time_s);
             document.getElementById("results-card").classList.remove("hidden");
             const grid = document.querySelector(".metrics-grid");
 
