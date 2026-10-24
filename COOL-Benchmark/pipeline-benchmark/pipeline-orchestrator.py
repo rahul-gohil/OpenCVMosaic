@@ -341,18 +341,20 @@ class PipelineOrchestrator:
                         raise Exception(f"Lost connection to instance after 5 retries: {e}")
 
     async def _reconfigure_to_pip(self, ip: str):
-        pip_version = "5.0.0.93"
+        # Switch from COOL to DIY: just change PYTHONPATH (no reinstall needed)
+        # COOL mode uses COOL's OpenCV via PYTHONPATH; DIY mode uses pip's OpenCV
         commands = [
             "sudo systemctl stop pipeline-mcp 2>/dev/null || true",
-            f"pip3 install --break-system-packages opencv-python-headless=={pip_version} numpy scipy",
+            # Remove COOL's site-packages from PYTHONPATH
+            "sudo sed -i 's|Environment=PYTHONPATH=/opt/cool/python_3.12/site-packages/|Environment=PYTHONPATH=|' /etc/systemd/system/pipeline-mcp.service",
+            "sudo systemctl daemon-reload",
             "sudo systemctl restart pipeline-mcp 2>/dev/null || true",
         ]
-        # Execute via SSH
         import subprocess
         key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
         ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-i", key_path,
                    f"ubuntu@{ip}", " && ".join(commands)]
-        subprocess.run(ssh_cmd, check=True, timeout=600)
+        subprocess.run(ssh_cmd, check=True, timeout=120)
 
     async def _download_results_locally(self, task, ip: str):
         """Download pipeline results from instance to local machine before termination."""
@@ -454,7 +456,7 @@ if [ ! -d "/opt/OpenCVMosaic" ]; then
 fi
 cd /opt/OpenCVMosaic
 # Install aiohttp using COOL venv's pip (system pip3 not available)
-/opt/cool/venvs/python_3.12/bin/pip install --quiet aiohttp 2>/dev/null || true
+/opt/cool/venvs/python_3.12/bin/pip install --quiet numpy scipy aiohttp opencv-python-headless==5.0.0.93
 cp /opt/OpenCVMosaic/COOL-Benchmark/opencv-ami/pipeline-mcp-server.py /opt/pipeline-mcp-server.py
 # Create wrapper script that uses COOL venv Python with COOL's OpenCV
 cat > /opt/run-mcp.sh << 'WRAPPER'
