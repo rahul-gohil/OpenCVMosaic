@@ -89,7 +89,7 @@ class PipelineOrchestrator:
         self.region = region or os.environ.get("AWS_DEFAULT_REGION", os.environ.get("AWS_REGION", "us-east-1"))
         self.marketplace_ami_id = marketplace_ami_id or os.environ.get("MARKETPLACE_AMI_ID", "")
         # Standard Graviton AMI for DIY-only mode (no COOL subscription needed)
-        self.diy_ami_id = diy_ami_id or os.environ.get("DIY_AMI_ID", "ami-06575ffbdddc0e7d0")
+        self.diy_ami_id = diy_ami_id or os.environ.get("DIY_AMI_ID", "ami-0373a05f3fe4e2663")
         self.instance_manager = InstanceManager(region=self.region)
         self.build_manager = BuildManager(region=self.region)
         self.tasks: Dict[str, PipelineBenchmarkTask] = {}
