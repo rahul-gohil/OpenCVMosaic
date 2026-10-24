@@ -23,6 +23,7 @@
         .status { padding: 12px; border-radius: 6px; margin-bottom: 12px; }
         .status.running { background: #ebf8ff; color: #2b6cb0; }
         .status.completed { background: #f0fff4; color: #276749; }
+        .status.downloading { background: #fefcbf; color: #744210; }
         .status.failed { background: #fff5f5; color: #c53030; }
         .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
         .metrics-grid.single { grid-template-columns: 1fr; max-width: 450px; margin: 0 auto; }
@@ -333,21 +334,18 @@
             const mergeEl = document.getElementById("merge-timing");
             if (!timings || timings.frames === 0) { el.style.display = "none"; return; }
             el.style.display = "block";
+            const chunkTotal = (timings.sift + timings.matching + timings.homography + timings.stitching).toFixed(2);
             rows.innerHTML = `
-                <div class="stage-row"><span>SIFT</span><span class="metric-value">${timings.sift}s</span></div>
-                <div class="stage-row"><span>Matching</span><span class="metric-value">${timings.matching}s</span></div>
-                <div class="stage-row"><span>Homography</span><span class="metric-value">${timings.homography}s</span></div>
-                <div class="stage-row"><span>Stitching</span><span class="metric-value">${timings.stitching}s</span></div>
-                <div class="stage-row" style="border-top:1px solid #e2e8f0;margin-top:4px;padding-top:4px;"><span>Frames processed</span><span class="metric-value">${timings.frames} (incl. overlap)</span></div>
+                <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+                    <tr><td style="padding:2px 0;">SIFT</td><td style="text-align:right;font-weight:600;">${timings.sift}s</td></tr>
+                    <tr><td style="padding:2px 0;">Matching</td><td style="text-align:right;font-weight:600;">${timings.matching}s</td></tr>
+                    <tr><td style="padding:2px 0;">Homography</td><td style="text-align:right;font-weight:600;">${timings.homography}s</td></tr>
+                    <tr><td style="padding:2px 0;">Stitching</td><td style="text-align:right;font-weight:600;">${timings.stitching}s</td></tr>
+                    <tr style="border-top:1px solid #e2e8f0;"><td style="padding:4px 0 2px 0;">Total time</td><td style="text-align:right;padding:4px 0 2px 0;">${chunkTotal}s</td></tr>
+                    <tr><td style="padding:2px 0;font-size:0.85em;color:#718096;">Frames processed</td><td style="text-align:right;padding:2px 0;font-size:0.85em;color:#718096;">${timings.frames} (incl. overlap)</td></tr>
+                </table>
                 <div style="font-size:0.75em;color:#a0aec0;margin-top:4px;">86 unique images, 4 overlap frames counted twice across 5 chunks</div>
             `;
-            // Add total chunk time (sum of per-stage)
-            const chunkTotal = (timings.sift + timings.matching + timings.homography + timings.stitching).toFixed(2);
-            const totalRow = document.createElement("div");
-            totalRow.className = "stage-row";
-            totalRow.style.cssText = "border-top:1px solid #e2e8f0;margin-top:4px;padding-top:4px;font-weight:600;";
-            totalRow.innerHTML = `<span>Total (core stages)</span><span class="metric-value">${chunkTotal}s</span>`;
-            rows.appendChild(totalRow);
             if (mergeTime) {
                 mergeEl.style.display = "block";
                 document.getElementById("merge-time-val").textContent = mergeTime + "s";

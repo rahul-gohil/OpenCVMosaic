@@ -59,6 +59,7 @@ class TaskStatus(Enum):
     PENDING = "pending"
     STAGING = "staging"
     RUNNING = "running"
+    DOWNLOADING = "downloading"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -220,7 +221,12 @@ class PipelineOrchestrator:
                 diy_metrics = await self._run_pipeline_on_instance(
                     ip, task.chunk_size
                 )
-                task.build_progress = {"current_step": "Completed", "progress_percent": 90}
+                task.build_progress = {"current_step": "Downloading results", "progress_percent": 90}
+                task.status = TaskStatus.DOWNLOADING
+                # Download results locally before marking complete
+                ip = getattr(task, "instance_ip", None)
+                if ip:
+                    await self._download_results_locally(task, ip)
                 task.results = {
                     "diy": diy_metrics,
                     "mode": "diy",
@@ -232,7 +238,11 @@ class PipelineOrchestrator:
                 cool_metrics = await self._run_pipeline_on_instance(
                     ip, task.chunk_size
                 )
-                task.build_progress = {"current_step": "Completed", "progress_percent": 90}
+                task.build_progress = {"current_step": "Downloading results", "progress_percent": 90}
+                task.status = TaskStatus.DOWNLOADING
+                ip = getattr(task, "instance_ip", None)
+                if ip:
+                    await self._download_results_locally(task, ip)
                 task.results = {
                     "cool": cool_metrics,
                     "mode": "cool",
@@ -256,7 +266,11 @@ class PipelineOrchestrator:
                 )
 
                 # Compare
-                task.build_progress = {"current_step": "Comparing results", "progress_percent": 90}
+                task.build_progress = {"current_step": "Downloading results", "progress_percent": 90}
+                task.status = TaskStatus.DOWNLOADING
+                ip = getattr(task, "instance_ip", None)
+                if ip:
+                    await self._download_results_locally(task, ip)
                 task.results = {
                     "cool": cool_metrics,
                     "diy": diy_metrics,
@@ -274,18 +288,10 @@ class PipelineOrchestrator:
             task.end_time = time.time()
         finally:
             if instance_id:
-                # Download results locally before terminating (so frontend can display them)
-                try:
-                    ip = getattr(task, "instance_ip", None)
-                    if ip:
-                        await self._download_results_locally(task, ip)
-                        logger.info(f"Results downloaded locally for {instance_id}")
-                except Exception as e:
-                    logger.warning(f"Could not download results locally: {e}")
-                # Terminate immediately after download (no grace period)
+                # Ensure terminated (download already done above)
                 try:
                     await self.instance_manager.terminate_instance(instance_id)
-                    logger.info(f"Terminated instance {instance_id} after results download")
+                    logger.info(f"Terminated instance {instance_id}")
                 except Exception as e:
                     logger.warning(f"Could not terminate instance {instance_id}: {e}")
 
