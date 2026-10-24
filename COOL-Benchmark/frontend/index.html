@@ -293,20 +293,29 @@
                 }
             });
 
-            // Show merged result
-            if (images.merged && images.merged.url) {
+            // Show merged result (use preview if available, else full)
+            const mergedUrl = (images.merged_preview && images.merged_preview.url) || (images.merged && images.merged.url);
+            if (mergedUrl) {
                 if (!mergedDiv.querySelector("img")) {
                     const p = document.createElement("p");
                     p.style.cssText = "font-size:0.85em;color:#718096;margin-bottom:4px;";
-                    p.textContent = "Merged Result:";
+                    p.textContent = "Merged Result (preview):";
                     const img = document.createElement("img");
-                    img.src = images.merged.url + "&t=" + Date.now();
+                    img.src = mergedUrl + "&t=" + Date.now();
                     img.style.cssText = "max-width:100%;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer;";
-                    img.onclick = () => window.open(images.merged.url, "_blank");
+                    img.onclick = () => window.open(mergedUrl, "_blank");
                     img.onerror = () => { img.alt = "Failed to load merged image"; img.style.border = "1px solid #e53e3e"; };
                     mergedDiv.appendChild(p);
                     mergedDiv.appendChild(img);
                 }
+            }
+            // Add download link for full-resolution mosaic
+            if (images.merged && images.merged.download_url && !mergedDiv.querySelector("a")) {
+                const link = document.createElement("a");
+                link.href = images.merged.download_url;
+                link.textContent = "Download Full Mosaic (" + (images.merged.size_bytes / 1e6).toFixed(1) + " MB)";
+                link.style.cssText = "display:block;margin-top:8px;font-size:0.85em;color:#667eea;";
+                mergedDiv.appendChild(link);
             }
         }
 

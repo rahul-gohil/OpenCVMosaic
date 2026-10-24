@@ -102,6 +102,19 @@ def _run_pipeline_sync(chunk_size, work_dir):
             logger.error(f"Merge failed: {proc.stderr[-500:]}")
             raise Exception(f"Merge failed: {proc.stderr[-500:]}")
         merge_time = time.perf_counter() - merge_start
+        # Generate downscaled preview of merged result
+        merged_path = os.path.join(work_dir, "merged", "mosaic_merged.jpg")
+        preview_path = os.path.join(work_dir, "merged", "mosaic_merged_preview.jpg")
+        if os.path.exists(merged_path):
+            try:
+                img = cv2.imread(merged_path)
+                if img is not None:
+                    h, w = img.shape[:2]
+                    preview = cv2.resize(img, (w // 10, h // 10), interpolation=cv2.INTER_AREA)
+                    cv2.imwrite(preview_path, preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    logger.info(f"Generated preview: {preview_path}")
+            except Exception as e:
+                logger.warning(f"Could not generate preview: {e}")
         pipeline_state["progress"] = {"current_step": "Merge complete", "progress_percent": 85}
 
         # Step 4: Skip upload (no S3) - results available via image gallery
@@ -191,10 +204,16 @@ def _list_generated_images(work_dir):
                 "size_bytes": os.path.getsize(mosaic_path),
             })
     merged_path = os.path.join(work_dir, "merged", "mosaic_merged.jpg")
+    preview_path = os.path.join(work_dir, "merged", "mosaic_merged_preview.jpg")
     if os.path.exists(merged_path):
         images["merged"] = {
             "path": merged_path,
             "size_bytes": os.path.getsize(merged_path),
+        }
+    if os.path.exists(preview_path):
+        images["merged_preview"] = {
+            "path": preview_path,
+            "size_bytes": os.path.getsize(preview_path),
         }
     return images
 

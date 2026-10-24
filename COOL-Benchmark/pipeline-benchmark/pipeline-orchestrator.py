@@ -456,6 +456,12 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
                 image_urls["merged"] = {
                     "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(pipeline_images['merged']['path'], safe='')}",
                     "size_bytes": pipeline_images["merged"].get("size_bytes", 0),
+                    "download_url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(pipeline_images['merged']['path'], safe='')}&download=1",
+                }
+            if pipeline_images.get("merged_preview"):
+                image_urls["merged_preview"] = {
+                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(pipeline_images['merged_preview']['path'], safe='')}",
+                    "size_bytes": pipeline_images["merged_preview"].get("size_bytes", 0),
                 }
 
         return {
@@ -586,11 +592,13 @@ async def create_app():
             proc = subprocess.run(
                 ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
                  f"ec2-user@{ip}:{img_path}", tmp],
-                capture_output=True, text=True, timeout=30
+                capture_output=True, text=True, timeout=60
             )
             if proc.returncode != 0 or not _os.path.exists(tmp):
                 raise Exception(proc.stderr[-200:])
             resp = web.FileResponse(tmp)
+            if request.query.get("download"):
+                resp.headers['Content-Disposition'] = 'attachment; filename="mosaic_merged.jpg"'
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
         except Exception as e:
