@@ -377,6 +377,11 @@
                     <div class="metric-row"><span class="metric-label">Total time</span><span class="metric-value">${m.total_time_s || '-'}s</span></div>
                     <div class="metric-row"><span class="metric-label">Stitch time</span><span class="metric-value">${m.stitch_time_s || '-'}s</span></div>
                     <div class="metric-row"><span class="metric-label">Merge time</span><span class="metric-value">${m.merge_time_s || '-'}s</span></div>
+                    <div class="metric-row" style="border-top:1px solid #e2e8f0;margin-top:4px;padding-top:4px;"><span class="metric-label">SIFT</span><span class="metric-value">${(m.per_stage_timings || {}).sift || '-'}s</span></div>
+                    <div class="metric-row"><span class="metric-label">Matching</span><span class="metric-value">${(m.per_stage_timings || {}).matching || '-'}s</span></div>
+                    <div class="metric-row"><span class="metric-label">Homography</span><span class="metric-value">${(m.per_stage_timings || {}).homography || '-'}s</span></div>
+                    <div class="metric-row"><span class="metric-label">Stitching</span><span class="metric-value">${(m.per_stage_timings || {}).stitching || '-'}s</span></div>
+                    <div class="metric-row"><span class="metric-label">Frames</span><span class="metric-value">${(m.per_stage_timings || {}).frames || '-'}</span></div>
                     <div class="metric-row"><span class="metric-label">Canvas</span><span class="metric-value">${m.canvas_mpx || '-'} Mpx</span></div>
                     <div class="metric-row"><span class="metric-label">OpenCV</span><span class="metric-value">${m.opencv_version || '-'}${m.is_cool ? ' (COOL)' : ' (pip)'}</span></div>
                 `;
