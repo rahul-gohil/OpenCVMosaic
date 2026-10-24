@@ -726,6 +726,7 @@ async def create_app():
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
         name = request.query.get("name", "")
+        import tempfile
         local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task_id}")
         file_path = os.path.join(local_dir, name)
         if not os.path.exists(file_path):
