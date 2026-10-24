@@ -163,24 +163,31 @@ def stitch(a_img, a_mask, b_img, b_mask, features, detect_px, work_dir,
     fs_b = FeatureSet(points=fb.points / scale, descriptors=fb.descriptors)
     sift_time = _time.perf_counter() - _t_sift
 
-    _t_match = _time.perf_counter()
     knn = matcher.knn_match(fa.descriptors, fb.descriptors)
+    _t_match = _time.perf_counter()
+    _t_homography = 0.0
     best = None
     for ratio in matcher.config.ratio_ladder:
         matches = matcher.ratio_filter(knn, ratio)
         if len(matches) < 4:
             continue
+        _th = _time.perf_counter()
         candidate = estimate_homography(fs_a, fs_b, matches, registration)
+        _t_homography += _time.perf_counter() - _th
         if candidate.ok and (best is None or candidate.inliers > best.inliers):
             best = candidate
 
     if best is None or not best.ok:
+        _ts = _time.perf_counter()
         best = _similarity(fs_a, fs_b, knn, matcher, registration, min_inliers)
-    match_time = _time.perf_counter() - _t_match
+        _t_homography += _time.perf_counter() - _ts
+    match_time = _time.perf_counter() - _t_match - _t_homography
     if best is None or not best.ok:
         raise RuntimeError(f"could not register the pair: {best.reason if best else 'no model'}")
     H = best.H
+    homography_time = _t_homography
 
+    _t_stitch_start = _time.perf_counter()
     corners = np.float32([[0, 0], [bw, 0], [bw, bh], [0, bh]]).reshape(-1, 1, 2)
     wc = cv2.perspectiveTransform(corners, H).reshape(-1, 2)
     x0 = int(np.floor(min(wc[:, 0].min(), 0)))
@@ -242,12 +249,11 @@ def stitch(a_img, a_mask, b_img, b_mask, features, detect_px, work_dir,
         if os.path.exists(path):
             os.remove(path)
     agreement = diff_sum / diff_count if diff_count else float("nan")
-    _total = _time.perf_counter() - _t_sift
-    stitch_time = _total - sift_time - match_time
+    stitch_time = _time.perf_counter() - _t_stitch_start
     merge_timings = {
         "sift": round(sift_time, 3),
-        "matching": round(match_time * 0.7, 3),  # approximate: matching is most of registration
-        "homography": round(match_time * 0.3, 3),  # approximate: homography is part of registration
+        "matching": round(match_time, 3),
+        "homography": round(homography_time, 3),
         "stitching": round(stitch_time, 3),
     }
     return canvas, valid, best, agreement, merge_timings
