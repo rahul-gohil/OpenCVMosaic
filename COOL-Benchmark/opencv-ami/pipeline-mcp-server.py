@@ -53,14 +53,25 @@ pipeline_state = {
     "start_time": None,
     "thread": None,
 }
+_pipeline_lock = threading.Lock()
+
+def _get_state(key, default=None):
+    with _pipeline_lock:
+        return pipeline_state.get(key, default)
+
+def _set_state(**kwargs):
+    with _pipeline_lock:
+        pipeline_state.update(kwargs)
+
+def _set_progress(step, pct):
+    with _pipeline_lock:
+        pipeline_state["progress"] = {"current_step": step, "progress_percent": pct}
 
 
 def _run_pipeline_sync(chunk_size, work_dir):
     """Run the pipeline synchronously (called in a background thread)."""
     global pipeline_state
-    pipeline_state["status"] = "running"
-    pipeline_state["start_time"] = time.perf_counter()
-    pipeline_state["work_dir"] = work_dir
+    _set_state(status="running", start_time=time.perf_counter(), work_dir=work_dir)
 
     try:
         # Step 1: Use local assets (shipped with repo)
@@ -71,7 +82,7 @@ def _run_pipeline_sync(chunk_size, work_dir):
         dl_time = 0.0
 
         # Step 2: Run chunked stitching
-        pipeline_state["progress"] = {"current_step": "Stitching chunks", "progress_percent": 15}
+        _set_progress("Stitching chunks", 15)
         stitch_start = time.perf_counter()
         proc = subprocess.run(
             [PYTHON, "main.py", "run-chunks",
@@ -87,10 +98,10 @@ def _run_pipeline_sync(chunk_size, work_dir):
             logger.error(f"Stitch failed: {proc.stderr[-500:]}")
             raise Exception(f"Stitch failed: {proc.stderr[-500:]}")
         stitch_time = time.perf_counter() - stitch_start
-        pipeline_state["progress"] = {"current_step": "Stitching complete", "progress_percent": 50}
+        _set_progress("Stitching complete", 50)
 
         # Step 3: Run merge
-        pipeline_state["progress"] = {"current_step": "Merging chunks", "progress_percent": 55}
+        _set_progress("Merging chunks", 55)
         merge_start = time.perf_counter()
         chunk_pattern = os.path.join(work_dir, "chunks", "chunk_*", "mosaic_final.jpg")
         proc = subprocess.run(
@@ -126,10 +137,10 @@ def _run_pipeline_sync(chunk_size, work_dir):
                     logger.info(f"Generated preview: {preview_path}")
             except Exception as e:
                 logger.warning(f"Could not generate preview: {e}")
-        pipeline_state["progress"] = {"current_step": "Merge complete", "progress_percent": 85}
+        _set_progress("Merge complete", 85)
 
         # Step 4: Skip upload (no S3) - results available via image gallery
-        pipeline_state["progress"] = {"current_step": "Finalizing", "progress_percent": 90}
+        _set_progress("Finalizing", 90)
         ul_time = 0.0
 
         total_time = time.perf_counter() - pipeline_state["start_time"]
@@ -163,16 +174,15 @@ def _run_pipeline_sync(chunk_size, work_dir):
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 metrics["content_pct"] = round(100.0 * (gray > 10).mean(), 1)
 
-        pipeline_state["metrics"] = metrics
-        pipeline_state["progress"] = {"current_step": "Completed", "progress_percent": 100}
-        pipeline_state["status"] = "completed"
+        _set_state(metrics=metrics)
+        _set_progress("Completed", 100)
+        _set_state(status="completed")
         logger.info(f"Pipeline complete: {metrics}")
 
     except Exception as e:
         logger.error(f"Pipeline failed: {e}", exc_info=True)
-        pipeline_state["status"] = "failed"
-        pipeline_state["error"] = str(e)
-        pipeline_state["progress"] = {"current_step": "Failed", "progress_percent": 0}
+        _set_state(status="failed", error=str(e))
+        _set_progress("Failed", 0)
 
     finally:
         # Cleanup work dir after a delay (keep images for viewing)
@@ -239,7 +249,7 @@ async def handle_health(request):
         "opencv_version": cv2.__version__ if OPENCV_AVAILABLE else None,
         "opencv_path": cv2.__file__ if OPENCV_AVAILABLE else None,
         "is_cool": "/opt/cool" in (cv2.__file__ if OPENCV_AVAILABLE else ""),
-        "pipeline_status": pipeline_state["status"],
+        "pipeline_status": _get_state("status", "idle"),
     })
 
 
@@ -253,15 +263,8 @@ async def handle_start_pipeline(request):
     work_dir = data.get("work_dir", "/tmp/scratchpad")
 
     # Reset state
-    pipeline_state = {
-        "status": "starting",
-        "progress": {"current_step": "Initializing", "progress_percent": 0},
-        "metrics": None,
-        "error": None,
-        "work_dir": work_dir,
-        "start_time": None,
-        "thread": None,
-    }
+    _set_state(status="starting", progress={"current_step": "Initializing", "progress_percent": 0},
+               metrics=None, error=None, work_dir=work_dir, start_time=None, thread=None)
 
     # Clean work dir
     import shutil
@@ -274,21 +277,25 @@ async def handle_start_pipeline(request):
         args=(chunk_size, work_dir),
         daemon=True,
     )
-    pipeline_state["thread"] = thread
+    _set_state(thread=thread)
     thread.start()
 
     return web.json_response({"status": "started", "work_dir": work_dir})
 
 
 async def handle_pipeline_status(request):
-    images = _list_generated_images(pipeline_state.get("work_dir"))
+    work_dir = _get_state("work_dir")
+    # Run file system operations in thread pool to avoid blocking event loop
+    loop = asyncio.get_event_loop()
+    images = await loop.run_in_executor(None, _list_generated_images, work_dir)
+    start_time = _get_state("start_time")
     return web.json_response({
-        "status": pipeline_state["status"],
-        "progress": pipeline_state["progress"],
-        "metrics": pipeline_state["metrics"],
-        "error": pipeline_state["error"],
+        "status": _get_state("status", "idle"),
+        "progress": _get_state("progress", {"current_step": "Idle", "progress_percent": 0}),
+        "metrics": _get_state("metrics"),
+        "error": _get_state("error"),
         "images": images,
-        "elapsed_s": round(time.perf_counter() - pipeline_state["start_time"], 1) if pipeline_state["start_time"] else 0,
+        "elapsed_s": round(time.perf_counter() - start_time, 1) if start_time else 0,
     })
 
 
@@ -298,7 +305,7 @@ async def handle_pipeline_image(request):
     if not img_path or not os.path.exists(img_path):
         return web.json_response({"error": "Image not found"}, status=404)
     # Security: only serve from work_dir
-    work_dir = pipeline_state.get("work_dir", "")
+    work_dir = _get_state("work_dir", "")
     if work_dir and not img_path.startswith(work_dir):
         return web.json_response({"error": "Access denied"}, status=403)
     return web.FileResponse(img_path)

@@ -307,10 +307,11 @@ class PipelineOrchestrator:
                     text = await resp.text()
                     raise Exception(f"Failed to start pipeline: {text}")
 
-            # Poll for completion
+            # Poll for completion with exponential backoff
             consecutive_errors = 0
+            poll_interval = 5
             while True:
-                await _asyncio.sleep(5)
+                await _asyncio.sleep(poll_interval)
                 try:
                     async with session.get(
                         f"http://{ip}:8080/pipeline-status",
@@ -318,6 +319,7 @@ class PipelineOrchestrator:
                     ) as resp:
                         data = await resp.json()
                         consecutive_errors = 0
+                        poll_interval = 5  # reset on success
                         status = data.get("status", "unknown")
                         progress = data.get("progress", {})
                         self._last_pipeline_images = data.get("images", {})
@@ -333,7 +335,8 @@ class PipelineOrchestrator:
                             raise Exception(data.get("error", "Pipeline failed"))
                 except Exception as e:
                     consecutive_errors += 1
-                    logger.warning(f"Poll error ({consecutive_errors}/5): {e}")
+                    poll_interval = min(poll_interval * 2, 20)  # exponential backoff: 5→10→20
+                    logger.warning(f"Poll error ({consecutive_errors}/5): {e}, next poll in {poll_interval}s")
                     if consecutive_errors >= 5:
                         raise Exception(f"Lost connection to instance after 5 retries: {e}")
 

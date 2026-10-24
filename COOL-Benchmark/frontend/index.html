@@ -521,7 +521,7 @@
         // Auto-refresh logs every 10s while running
         function startLogPolling() {
             if (logInterval) clearInterval(logInterval);
-            logInterval = setInterval(fetchLogs, 10000);
+            logInterval = setInterval(fetchLogs, 5000);
         }
 
         function stopLogPolling() {
