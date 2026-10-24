@@ -357,8 +357,7 @@ class PipelineOrchestrator:
     def _get_user_data(self) -> str:
         return """#!/bin/bash
 set -e
-apt-get update -y
-apt-get install -y git python3-pip python3-venv
+# COOL AMI is Amazon Linux (Graviton5) - has Python and git pre-installed
 cd /opt
 if [ ! -d "/opt/OpenCVMosaic" ]; then
     git clone --depth 1 https://github.com/rahul-gohil/OpenCVMosaic.git /opt/OpenCVMosaic

@@ -136,7 +136,7 @@ class InstanceManager:
                 logger.info(f"Found security group: {sg_id}")
                 
                 # Ensure port 8080 is open
-                await self._ensure_port_8080_open(sg_id)
+                await self._ensure_ports_open(sg_id)
                 return sg_id
             else:
                 # Create new security group
@@ -157,7 +157,7 @@ class InstanceManager:
                     ]
                 )
                 
-                # Add inbound rule for port 8080 (from anywhere for now)
+                # Add inbound rules for ports 8080 (MCP) and 22 (SSH)
                 self.ec2_client.authorize_security_group_ingress(
                     GroupId=sg_id,
                     IpPermissions=[
@@ -166,11 +166,17 @@ class InstanceManager:
                             'FromPort': 8080,
                             'ToPort': 8080,
                             'IpRanges': [{'CidrIp': '0.0.0.0/0', 'Description': 'MCP server access'}]
+                        },
+                        {
+                            'IpProtocol': 'tcp',
+                            'FromPort': 22,
+                            'ToPort': 22,
+                            'IpRanges': [{'CidrIp': '0.0.0.0/0', 'Description': 'SSH access for logs and images'}]
                         }
                     ]
                 )
                 
-                logger.info(f"✅ Created security group {sg_id} with port 8080 open")
+                logger.info(f"✅ Created security group {sg_id} with ports 8080 and 22 open")
                 return sg_id
                 
         except Exception as e:
@@ -187,149 +193,42 @@ class InstanceManager:
                 sg_id = default_sgs['SecurityGroups'][0]['GroupId']
                 logger.info(f"Using default security group: {sg_id}")
                 # Try to open port 8080 on default group
-                await self._ensure_port_8080_open(sg_id)
+                await self._ensure_ports_open(sg_id)
                 return sg_id
             return None
     
-    async def _ensure_port_8080_open(self, sg_id):
-        """Ensure port 8080 is open in the security group"""
+    async def _ensure_ports_open(self, sg_id):
+        """Ensure ports 8080 and 22 are open in the security group"""
         try:
-            # Check if port 8080 is already open
             sg = self.ec2_client.describe_security_groups(GroupIds=[sg_id])
-            
-            port_8080_open = False
+            open_ports = set()
             for permission in sg['SecurityGroups'][0].get('IpPermissions', []):
-                if (permission.get('IpProtocol') == 'tcp' and 
-                    permission.get('FromPort') == 8080 and 
-                    permission.get('ToPort') == 8080):
-                    port_8080_open = True
-                    break
+                if permission.get('IpProtocol') == 'tcp' and permission.get('FromPort') == permission.get('ToPort'):
+                    open_ports.add(permission.get('FromPort'))
             
-            if not port_8080_open:
-                logger.info(f"Opening port 8080 on security group {sg_id}...")
-                self.ec2_client.authorize_security_group_ingress(
-                    GroupId=sg_id,
-                    IpPermissions=[
-                        {
-                            'IpProtocol': 'tcp',
-                            'FromPort': 8080,
-                            'ToPort': 8080,
-                            'IpRanges': [{'CidrIp': '0.0.0.0/0', 'Description': 'MCP server access'}]
-                        }
-                    ]
-                )
-                logger.info(f"✅ Port 8080 opened on security group {sg_id}")
-            else:
-                logger.info(f"✅ Port 8080 already open on security group {sg_id}")
-                
-        except self.ec2_client.exceptions.ClientError as e:
-            if 'InvalidPermission.Duplicate' in str(e):
-                logger.info(f"Port 8080 already open on security group {sg_id}")
-            else:
-                logger.warning(f"Could not open port 8080 on security group {sg_id}: {e}")
-    
-    async def launch_instance(
-        self, 
-        instance_type: str, 
-        ami_id: str, 
-        user_data: str = None,
-        tags: Dict[str, str] = None,
-        optimization_mode: str = "optimized"
-    ) -> str:
-        """Launch a new EC2 instance"""
-        try:
-            # Use provided user_data or generate default
-            if user_data is None:
-                user_data = f"""#!/bin/bash
-apt-get update -y
-apt-get install -y python3 python3-pip
-
-# Install MCP server dependencies
-pip3 install --break-system-packages mcp aiohttp boto3 psutil Pillow opencv-python==4.12.0.88 numpy
-
-# Configure optimization mode
-echo "Optimization mode: {optimization_mode}" > /tmp/opencv_mode.txt
-"""
-
-            # Prepare tags
-            current_timestamp = str(int(time.time()))
-            termination_timestamp = str(int(time.time() + 7200))  # 2 hours from now
-            max_lifetime_hours = 3  # Maximum 3 hours lifetime as safety net
-            
-            tag_dict = {
-                'Name': f'opencv-benchmark-{instance_type}',
-                'Project': 'OpenCV-Graviton-Benchmark',
-                'OptimizationMode': optimization_mode,
-                'LaunchTimestamp': current_timestamp,
-                'TerminationTimestamp': termination_timestamp,  # When to auto-terminate
-                'MaxLifetimeHours': str(max_lifetime_hours),
-                'AutoTerminate': 'true'  # Flag for cleanup scripts
-            }
-            
-            # Merge with provided tags (provided tags override defaults)
-            if tags:
-                tag_dict.update(tags)
-            
-            # Convert to list format for AWS API
-            tag_list = [{'Key': k, 'Value': v} for k, v in tag_dict.items()]
-
-            # Launch instance
-            response = self.ec2_client.run_instances(
-                ImageId=ami_id,
-                MinCount=1,
-                MaxCount=1,
-                InstanceType=instance_type,
-                KeyName=self.key_pair_name,
-                SecurityGroupIds=[self.security_group_id] if self.security_group_id else [],
-                SubnetId=self.subnet_ids[0] if self.subnet_ids else None,
-                UserData=user_data,
-                TagSpecifications=[
-                    {
-                        'ResourceType': 'instance',
-                        'Tags': tag_list
-                    }
-                ],
-                IamInstanceProfile={'Name': 'OpenCVInstanceRole'} if self._check_instance_profile() else {}
-            )
-            
-            instance_id = response['Instances'][0]['InstanceId']
-            
-            # Get pricing
-            cost_per_hour = await self._get_instance_pricing(instance_type)
-            
-            # Extract build_mode from tags if provided
-            build_mode = tags.get('BuildMode', 'unknown') if tags else 'unknown'
-            
-            # Create instance record
-            instance = BenchmarkInstance(
-                instance_id=instance_id,
-                instance_type=instance_type,
-                state=InstanceState.PENDING,
-                private_ip="",
-                public_ip=None,
-                launch_time=time.time(),
-                cost_per_hour=cost_per_hour,
-                build_mode=build_mode
-            )
-            
-            self.instances[instance_id] = instance
-            
-            logger.info(f"Launched instance {instance_id} ({instance_type}, build_mode={build_mode})")
-            return instance_id
-            
+            for port, desc in [(8080, 'MCP server access'), (22, 'SSH access for logs and images')]:
+                if port not in open_ports:
+                    try:
+                        self.ec2_client.authorize_security_group_ingress(
+                            GroupId=sg_id,
+                            IpPermissions=[
+                                {
+                                    'IpProtocol': 'tcp',
+                                    'FromPort': port,
+                                    'ToPort': port,
+                                    'IpRanges': [{'CidrIp': '0.0.0.0/0', 'Description': desc}]
+                                }
+                            ]
+                        )
+                        logger.info(f"✅ Port {port} opened on security group {sg_id}")
+                    except Exception as e:
+                        if 'InvalidPermission.Duplicate' not in str(e):
+                            logger.warning(f"Could not open port {port}: {e}")
+                else:
+                    logger.info(f"✅ Port {port} already open on security group {sg_id}")
         except Exception as e:
-            logger.error(f"Error launching instance: {e}")
-            raise
-    
-    def _check_instance_profile(self) -> bool:
-        """Check if IAM instance profile exists"""
-        try:
-            iam = boto3.client('iam')
-            iam.get_instance_profile(InstanceProfileName='OpenCVInstanceRole')
-            return True
-        except:
-            return False
-    
+            logger.warning(f"Error checking security group: {e}")
+
     async def wait_for_instance_ready(self, instance_id: str, timeout: int = 300) -> bool:
         """Wait for instance to be ready and MCP server to start"""
         start_time = time.time()
