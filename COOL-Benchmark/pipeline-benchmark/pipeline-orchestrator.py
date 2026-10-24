@@ -449,6 +449,14 @@ cd /opt/OpenCVMosaic
 source /opt/cool/venvs/python_3.12/bin/activate
 pip install --quiet numpy scipy aiohttp
 cp /opt/OpenCVMosaic/COOL-Benchmark/opencv-ami/pipeline-mcp-server.py /opt/pipeline-mcp-server.py
+# Create wrapper script that sets LD_LIBRARY_PATH and PYTHONPATH
+cat > /opt/run-mcp.sh << 'WRAPPER'
+#!/bin/bash
+export LD_LIBRARY_PATH=/opt/cool/cpp_sdk/lib:/opt/ffmpeg/lib:$LD_LIBRARY_PATH
+export PYTHONPATH=/opt/cool/python_3.12/site-packages/:$PYTHONPATH
+exec /opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py
+WRAPPER
+chmod +x /opt/run-mcp.sh
 # Start the pipeline MCP server as a systemd service
 cat > /etc/systemd/system/pipeline-mcp.service << 'EOF'
 [Unit]
@@ -458,11 +466,8 @@ After=network.target
 [Service]
 Type=simple
 User=ubuntu
-Environment=PYTHON=/opt/cool/venvs/python_3.12/bin/python
 Environment=PIPELINE_DIR=/opt/OpenCVMosaic
-Environment=LD_LIBRARY_PATH=/opt/cool/cpp_sdk/lib:/opt/ffmpeg/lib
-Environment=PYTHONPATH=/opt/cool/python_3.12/site-packages/
-ExecStart=/opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py
+ExecStart=/opt/run-mcp.sh
 Restart=always
 RestartSec=5
 
