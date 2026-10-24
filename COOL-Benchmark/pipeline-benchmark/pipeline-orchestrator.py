@@ -279,22 +279,15 @@ class PipelineOrchestrator:
                     ip = getattr(task, "instance_ip", None)
                     if ip:
                         await self._download_results_locally(task, ip)
+                        logger.info(f"Results downloaded locally for {instance_id}")
                 except Exception as e:
                     logger.warning(f"Could not download results locally: {e}")
-                # Keep instance alive for 5 minutes so user can SSH/inspect
-                # Auto-terminate after grace period
+                # Terminate immediately after download (no grace period)
                 try:
-                    async def _delayed_terminate():
-                        await asyncio.sleep(300)  # 5 minute grace period
-                        try:
-                            await self.instance_manager.terminate_instance(instance_id)
-                            logger.info(f"Auto-terminated instance {instance_id} after grace period")
-                        except Exception:
-                            pass
-                    asyncio.create_task(_delayed_terminate())
-                    logger.info(f"Instance {instance_id} kept alive for 5 min grace period")
+                    await self.instance_manager.terminate_instance(instance_id)
+                    logger.info(f"Terminated instance {instance_id} after results download")
                 except Exception as e:
-                    logger.warning(f"Could not schedule auto-terminate: {e}")
+                    logger.warning(f"Could not terminate instance {instance_id}: {e}")
 
     async def _run_pipeline_on_instance(self, ip: str, chunk_size: int) -> dict:
         import asyncio as _asyncio
