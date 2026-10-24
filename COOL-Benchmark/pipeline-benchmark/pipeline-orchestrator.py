@@ -345,7 +345,9 @@ class PipelineOrchestrator:
         # COOL mode uses COOL's OpenCV via PYTHONPATH; DIY mode uses pip's OpenCV
         commands = [
             "sudo systemctl stop pipeline-mcp 2>/dev/null || true",
-            # Remove COOL's site-packages from PYTHONPATH
+            # Rewrite wrapper script to remove COOL's PYTHONPATH
+            "sudo sed -i 's|export PYTHONPATH=/opt/cool/python_3.12/site-packages/:$PYTHONPATH|# PYTHONPATH cleared - uses pip OpenCV from venv|' /opt/run-mcp.sh",
+            # Remove COOL's site-packages from systemd service
             "sudo sed -i 's|Environment=PYTHONPATH=/opt/cool/python_3.12/site-packages/|Environment=PYTHONPATH=|' /etc/systemd/system/pipeline-mcp.service",
             "sudo systemctl daemon-reload",
             "sudo systemctl restart pipeline-mcp 2>/dev/null || true",
