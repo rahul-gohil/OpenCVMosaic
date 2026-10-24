@@ -27,7 +27,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('/var/log/pipeline-mcp.log'),
+        logging.FileHandler('/tmp/pipeline-mcp.log'),
     ],
 )
 logger = logging.getLogger("pipeline-mcp-server")

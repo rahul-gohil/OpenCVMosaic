@@ -664,7 +664,7 @@ async def create_app():
             proc = subprocess.run(
                 ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
                  "-i", key_path, f"{ssh_user}@{ip}",
-                 "sudo tail -50 /var/log/pipeline-mcp.log 2>/dev/null || echo 'No log file'"],
+                 "sudo tail -50 /tmp/pipeline-mcp.log 2>/dev/null || echo 'No log file'"],
                 capture_output=True, text=True, timeout=15
             )
             logs = proc.stdout if proc.returncode == 0 else proc.stderr
