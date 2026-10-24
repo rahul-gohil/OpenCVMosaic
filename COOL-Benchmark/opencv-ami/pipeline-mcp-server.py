@@ -76,6 +76,7 @@ def _run_pipeline_sync(chunk_size, work_dir):
         proc = subprocess.run(
             [PYTHON, "main.py", "run-chunks",
              "--dataset", input_dir,
+             "--pattern", "*.jpg",
              "--chunk-size", str(chunk_size),
              "--output-root", os.path.join(work_dir, "chunks"),
              "--prefix", "chunk"],

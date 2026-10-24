@@ -216,7 +216,6 @@ class PipelineOrchestrator:
 
             if mode == "diy":
                 # DIY-only: run once with standard OpenCV
-                diy_output = f"{task.s3_output}/diy"
                 diy_metrics = await self._run_pipeline_on_instance(
                     ip, task.chunk_size
                 )
@@ -229,9 +228,8 @@ class PipelineOrchestrator:
 
             elif mode == "cool":
                 # COOL-only: run once with COOL OpenCV
-                cool_output = f"{task.s3_output}/cool"
                 cool_metrics = await self._run_pipeline_on_instance(
-                    ip, task.s3_input, cool_output, task.chunk_size
+                    ip, task.chunk_size
                 )
                 task.build_progress = {"current_step": "Completed", "progress_percent": 90}
                 task.results = {
@@ -243,9 +241,8 @@ class PipelineOrchestrator:
             else:
                 # Compare mode: run both COOL and DIY
                 # Run COOL (marketplace) build first
-                cool_output = f"{task.s3_output}/cool"
                 cool_metrics = await self._run_pipeline_on_instance(
-                    ip, task.s3_input, cool_output, task.chunk_size
+                    ip, task.chunk_size
                 )
 
                 # Reconfigure to DIY (pip)
@@ -253,7 +250,6 @@ class PipelineOrchestrator:
                 await self._reconfigure_to_pip(ip)
 
                 # Run DIY build
-                diy_output = f"{task.s3_output}/diy"
                 diy_metrics = await self._run_pipeline_on_instance(
                     ip, task.chunk_size
                 )
@@ -324,15 +320,14 @@ class PipelineOrchestrator:
         pip_version = "5.0.0.93"
         commands = [
             "sudo systemctl stop pipeline-mcp 2>/dev/null || true",
-            "sudo apt-get update -y -qq",
-            "sudo apt-get install -y -qq python3-pip",
             f"pip3 install --break-system-packages opencv-python-headless=={pip_version} numpy scipy",
             "sudo systemctl restart pipeline-mcp 2>/dev/null || true",
         ]
-        # Execute via SSH (simplified - in production use SSM)
+        # Execute via SSH
         import subprocess
-        ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-i", os.environ.get("EC2_KEY_PATH", "key.pem"),
-                   f"ubuntu@{ip}", " && ".join(commands)]
+        key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
+        ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-i", key_path,
+                   f"ec2-user@{ip}", " && ".join(commands)]
         subprocess.run(ssh_cmd, check=True, timeout=600)
 
     def _compare(self, cool: dict, diy: dict) -> dict:
@@ -397,14 +392,14 @@ set -e
 # Update system
 dnf update -y || apt-get update -y
 
-# Install Python, pip, git (no awscli needed)
+# Install Python, pip, git
 if command -v dnf &> /dev/null; then
     dnf install -y python3 python3-pip git
 else
     apt-get install -y python3 python3-pip git
 fi
 
-# Install OpenCV and dependencies via pip (no boto3 needed)
+# Install OpenCV and dependencies via pip
 pip3 install --break-system-packages opencv-python-headless numpy scipy aiohttp psutil Pillow 2>/dev/null || pip3 install opencv-python-headless numpy scipy aiohttp psutil Pillow
 
 # Clone the pipeline code from GitHub (no AWS credentials needed)

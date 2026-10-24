@@ -73,6 +73,59 @@ class InstanceManager:
             logger.error(f"Failed to initialize instance manager: {e}")
             raise
     
+    async def launch_instance(
+        self,
+        instance_type: str,
+        ami_id: str,
+        user_data: str = None,
+        tags: Dict[str, str] = None,
+        key_pair_name: str = None,
+    ) -> str:
+        """Launch a new EC2 instance and return its ID."""
+        try:
+            key_name = key_pair_name or self.key_pair_name
+            tag_list = [{"Key": k, "Value": v} for k, v in (tags or {}).items()]
+
+            params = {
+                "ImageId": ami_id,
+                "InstanceType": instance_type,
+                "MinCount": 1,
+                "MaxCount": 1,
+                "TagSpecifications": [
+                    {"ResourceType": "instance", "Tags": tag_list}
+                ],
+            }
+            if key_name:
+                params["KeyName"] = key_name
+            if user_data:
+                params["UserData"] = user_data
+            if self.security_group_id:
+                params["SecurityGroupIds"] = [self.security_group_id]
+            if self.subnet_ids:
+                params["SubnetId"] = self.subnet_ids[0]
+
+            logger.info(f"Launching instance: type={instance_type}, ami={ami_id}, key={key_name}")
+            response = self.ec2_client.run_instances(**params)
+            instance_id = response["Instances"][0]["InstanceId"]
+            logger.info(f"Launched instance {instance_id}")
+
+            # Register in self.instances
+            self.instances[instance_id] = BenchmarkInstance(
+                instance_id=instance_id,
+                instance_type=instance_type,
+                state=InstanceState.PENDING,
+                private_ip="",
+                public_ip=None,
+                launch_time=time.time(),
+                cost_per_hour=0.0,
+                build_mode="diy",
+            )
+
+            return instance_id
+        except Exception as e:
+            logger.error(f"Error launching instance: {e}")
+            raise
+
     async def _discover_infrastructure(self):
         """Discover existing VPC, subnets, and security groups"""
         try:
