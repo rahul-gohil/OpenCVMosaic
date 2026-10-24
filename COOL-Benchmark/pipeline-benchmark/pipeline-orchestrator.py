@@ -446,15 +446,15 @@ if [ ! -d "/opt/OpenCVMosaic" ]; then
     git clone --depth 1 https://github.com/rahul-gohil/OpenCVMosaic.git /opt/OpenCVMosaic
 fi
 cd /opt/OpenCVMosaic
-source /opt/cool/venvs/python_3.12/bin/activate
-pip install --quiet numpy scipy aiohttp
+# Install aiohttp for system Python (COOL venv lacks it)
+pip3 install --quiet aiohttp 2>/dev/null || sudo pip3 install --quiet aiohttp
 cp /opt/OpenCVMosaic/COOL-Benchmark/opencv-ami/pipeline-mcp-server.py /opt/pipeline-mcp-server.py
-# Create wrapper script that sets LD_LIBRARY_PATH and PYTHONPATH
+# Create wrapper script that uses system Python with COOL's OpenCV
 cat > /opt/run-mcp.sh << 'WRAPPER'
 #!/bin/bash
 export LD_LIBRARY_PATH=/opt/cool/cpp_sdk/lib:/opt/ffmpeg/lib:$LD_LIBRARY_PATH
 export PYTHONPATH=/opt/cool/python_3.12/site-packages/:$PYTHONPATH
-exec /opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py
+exec python3 /opt/pipeline-mcp-server.py
 WRAPPER
 chmod +x /opt/run-mcp.sh
 # Start the pipeline MCP server as a systemd service
@@ -467,6 +467,8 @@ After=network.target
 Type=simple
 User=ubuntu
 Environment=PIPELINE_DIR=/opt/OpenCVMosaic
+Environment=LD_LIBRARY_PATH=/opt/cool/cpp_sdk/lib:/opt/ffmpeg/lib
+Environment=PYTHONPATH=/opt/cool/python_3.12/site-packages/
 ExecStart=/opt/run-mcp.sh
 Restart=always
 RestartSec=5
