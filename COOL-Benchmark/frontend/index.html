@@ -655,7 +655,7 @@
 
         async function terminateInstance() {
             if (!currentTaskId) return;
-            if (!confirm("Terminate the EC2 instance? The running benchmark will be lost.")) return;
+            if (!confirm("Terminate the EC2 instance? The running benchmark will be lost, and any full-resolution mosaic you have not downloaded yet will be permanently lost.")) return;
             try {
                 const resp = await fetch(API + "/api/benchmark/" + currentTaskId + "/terminate", { method: "POST" });
                 const data = await resp.json();
@@ -689,7 +689,7 @@
 
         async function stopBenchmark() {
             if (!currentTaskId) return;
-            if (!confirm("Stop the benchmark and terminate the EC2 instance?")) return;
+            if (!confirm("Stop the benchmark and terminate the EC2 instance? Full-resolution mosaics you have not downloaded will be lost.")) return;
             if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
             stopLogPolling();
             try {
