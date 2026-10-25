@@ -91,6 +91,8 @@ class PipelineBenchmarkTask:
     local_images: Optional[Dict[str, str]] = None
     cool_local_images: Optional[Dict[str, str]] = None
     diy_local_images: Optional[Dict[str, str]] = None
+    download_complete: bool = False
+    diy_download_complete: bool = False
     build_progress: Optional[Dict[str, Any]] = None
     end_time: Optional[float] = None
     results: Optional[Dict[str, Any]] = None
@@ -252,16 +254,15 @@ class PipelineOrchestrator:
                 diy_metrics = await self._run_pipeline_on_instance(
                     ip, task.chunk_size, work_dir="/tmp/scratchpad_diy"
                 )
-                task.build_progress = {"current_step": "Downloading results", "progress_percent": 90}
-                task.status = TaskStatus.DOWNLOADING
-                # Download results locally before marking complete
-                ip = getattr(task, "instance_ip", None)
-                if ip:
-                    await self._download_results_locally(task, ip)
                 task.results = {
                     "diy": diy_metrics,
                     "mode": "diy",
                 }
+                task.build_progress = {"current_step": "Downloading results", "progress_percent": 90}
+                task.status = TaskStatus.DOWNLOADING
+                ip = getattr(task, "instance_ip", None)
+                if ip:
+                    await self._download_results_locally(task, ip)
                 task.status = TaskStatus.COMPLETED
 
             elif mode == "cool":
@@ -270,15 +271,15 @@ class PipelineOrchestrator:
                 cool_metrics = await self._run_pipeline_on_instance(
                     ip, task.chunk_size, work_dir="/tmp/scratchpad_cool"
                 )
+                task.results = {
+                    "cool": cool_metrics,
+                    "mode": "cool",
+                }
                 task.build_progress = {"current_step": "Downloading results", "progress_percent": 90}
                 task.status = TaskStatus.DOWNLOADING
                 ip = getattr(task, "instance_ip", None)
                 if ip:
                     await self._download_results_locally(task, ip)
-                task.results = {
-                    "cool": cool_metrics,
-                    "mode": "cool",
-                }
                 task.status = TaskStatus.COMPLETED
 
             else:
@@ -311,12 +312,8 @@ class PipelineOrchestrator:
                     ip, task.chunk_size, work_dir="/tmp/scratchpad_cool"
                 )
 
-                # Compare
-                task.build_progress = {"current_step": "Downloading results", "progress_percent": 90}
-                task.status = TaskStatus.DOWNLOADING
-                ip = getattr(task, "instance_ip", None)
-                if ip:
-                    await self._download_results_locally(task, ip)
+                # Cache comparison before downloading so the UI can render the
+                # results table while the (slow) image downloads run.
                 task.current_run = "completed"
                 task.results = {
                     "cool": cool_metrics,
@@ -324,6 +321,11 @@ class PipelineOrchestrator:
                     "comparison": self._compare(cool_metrics, diy_metrics),
                     "mode": "compare",
                 }
+                task.build_progress = {"current_step": "Downloading results", "progress_percent": 90}
+                task.status = TaskStatus.DOWNLOADING
+                ip = getattr(task, "instance_ip", None)
+                if ip:
+                    await self._download_results_locally(task, ip)
                 task.status = TaskStatus.COMPLETED
             task.end_time = time.time()
             task.build_progress = {"current_step": "Completed", "progress_percent": 100}
@@ -601,140 +603,174 @@ exec /opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py
         raise Exception("MCP server not ready in COOL mode after reconfigure")
 
     async def _download_results_locally(self, task, ip: str):
-        """Download pipeline results from instance to local machine before termination."""
-        import subprocess, os as _os, tempfile
+        """Download COOL and DIY artifacts in parallel without blocking the loop.
+
+        ``subprocess.run`` is blocking, so all SCP work is pushed to a worker
+        thread; otherwise the aiohttp event loop (and therefore every
+        /status poll the frontend makes) freezes for the whole download.
+        """
+        import asyncio
+        await asyncio.to_thread(self._download_results_sync, task, ip)
+
+    def _download_results_sync(self, task, ip: str):
+        import os as _os, tempfile
+        from concurrent.futures import ThreadPoolExecutor
+
         key_path = os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem"))
         ssh_user = getattr(task, "ssh_user", "ec2-user")
-        local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task.task_id}")
-        os.makedirs(local_dir, exist_ok=True)
-        task.local_images = {"chunks": [], "merged": None, "merged_preview": None}
+        base = tempfile.gettempdir()
 
-        # Download COOL images (current _last_pipeline_images after COOL run)
-        images = getattr(self, "_last_pipeline_images", {})
-        if not images:
-            images = getattr(self, "_cool_pipeline_images", {})
-        if not images:
-            return
+        # primary set: COOL in compare/cool modes, DIY in diy-only mode
+        primary = getattr(self, "_last_pipeline_images", {}) or {}
+        if not primary:
+            primary = getattr(self, "_cool_pipeline_images", {}) or {}
+        diy_imgs = getattr(self, "_diy_pipeline_images", {}) or {}
 
-        # Download chunk images
-        for chunk in images.get("chunks", []):
-            remote_path = chunk["path"]
-            local_name = f"{chunk['name']}.jpg"
-            local_path = os.path.join(local_dir, local_name)
-            try:
-                proc = subprocess.run(
-                    ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                     f"{ssh_user}@{ip}:{remote_path}", local_path],
-                    capture_output=True, text=True, timeout=60
-                )
-                if proc.returncode == 0 and _os.path.exists(local_path):
-                    task.local_images["chunks"].append({
-                        "name": chunk["name"],
-                        "path": local_path,
-                        "size_bytes": _os.path.getsize(local_path),
-                    })
-            except Exception as e:
-                logger.warning(f"Could not download {remote_path}: {e}")
+        primary_dir = os.path.join(base, f"pipeline-results-{task.task_id}")
+        diy_dir = os.path.join(base, f"pipeline-results-{task.task_id}-diy")
 
-        # Download merged result
+        def progress(step, pct):
+            task.build_progress = {"current_step": step, "progress_percent": pct}
+
+        progress("Downloading results", 92)
+
+        def fetch(images, local_dir):
+            if not images:
+                return None
+            return self._fetch_image_set(key_path, ssh_user, ip, images, local_dir)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_primary = pool.submit(fetch, primary, primary_dir)
+            f_diy = pool.submit(fetch, diy_imgs, diy_dir) if diy_imgs else None
+            primary_res = f_primary.result()
+            diy_res = f_diy.result() if f_diy else None
+
+        if primary_res is not None:
+            task.local_images = primary_res
+            task.download_complete = True
+            logger.info(f"Downloaded {len(primary_res['chunks'])} chunks + merged to {primary_dir}")
+
+        if diy_res is not None:
+            task.diy_local_images = diy_res
+            task.diy_download_complete = True
+            logger.info(f"Downloaded {len(diy_res['chunks'])} DIY chunks + merged to {diy_dir}")
+
+        progress("Download complete", 99)
+
+    def _fetch_image_set(self, key_path, ssh_user, ip, images, local_dir):
+        """Fetch one run's outputs.
+
+        Uses a single ``tar`` stream over one SSH connection (one handshake,
+        full link bandwidth) instead of one SCP per file. Falls back to
+        sequential SCP if the stream fails. Returns a dict with flattened
+        local paths (``<local_dir>/<chunk>.jpg``, ``mosaic_merged.jpg`` ...).
+        """
+        import os as _os, shutil, subprocess, shlex
+
+        chunks = images.get("chunks", []) or []
+        merged = images.get("merged")
+        preview = images.get("merged_preview")
+
+        _os.makedirs(local_dir, exist_ok=True)
+
+        # Derive the remote work dir from a chunk path:
+        #   <workdir>/chunks/<name>/mosaic_final.jpg
+        workdir = None
+        if chunks:
+            workdir = _os.path.dirname(_os.path.dirname(_os.path.dirname(chunks[0]["path"])))
+        elif merged:
+            workdir = _os.path.dirname(_os.path.dirname(merged["path"]))
+
+        remote_files = []
+        if workdir:
+            remote_files = [f"chunks/{c['name']}/mosaic_final.jpg" for c in chunks]
+            if merged:
+                remote_files.append("merged/mosaic_merged.jpg")
+            if preview:
+                remote_files.append("merged/mosaic_merged_preview.jpg")
+
+        staging = _os.path.join(local_dir, "_incoming")
+        shutil.rmtree(staging, ignore_errors=True)
+        _os.makedirs(staging, exist_ok=True)
+
+        fetched = False
+        if workdir and remote_files:
+            remote_cmd = "cd {} && tar -cf - {}".format(
+                shlex.quote(workdir),
+                " ".join(shlex.quote(p) for p in remote_files),
+            )
+            fetched = self._ssh_tar_stream(key_path, ssh_user, ip, remote_cmd, staging, timeout=900)
+
+        if not fetched:
+            logger.warning(f"tar stream failed for {workdir}; falling back to sequential scp")
+            self._scp_sequential(key_path, ssh_user, ip, images, local_dir)
+
+        # Flatten the streamed tree into the flat layout served by /local-image
+        for chunk in chunks:
+            src = _os.path.join(staging, "chunks", chunk["name"], "mosaic_final.jpg")
+            dst = _os.path.join(local_dir, chunk["name"] + ".jpg")
+            if _os.path.exists(src):
+                shutil.move(src, dst)
+        if merged:
+            src = _os.path.join(staging, "merged", "mosaic_merged.jpg")
+            dst = _os.path.join(local_dir, "mosaic_merged.jpg")
+            if _os.path.exists(src):
+                shutil.move(src, dst)
+        if preview:
+            src = _os.path.join(staging, "merged", "mosaic_merged_preview.jpg")
+            dst = _os.path.join(local_dir, "mosaic_merged_preview.jpg")
+            if _os.path.exists(src):
+                shutil.move(src, dst)
+        shutil.rmtree(staging, ignore_errors=True)
+
+        out = {"chunks": [], "merged": None, "merged_preview": None}
+        for chunk in chunks:
+            p = _os.path.join(local_dir, chunk["name"] + ".jpg")
+            if _os.path.exists(p):
+                out["chunks"].append({"name": chunk["name"], "path": p, "size_bytes": _os.path.getsize(p)})
+        mp = _os.path.join(local_dir, "mosaic_merged.jpg")
+        if _os.path.exists(mp):
+            out["merged"] = {"path": mp, "size_bytes": _os.path.getsize(mp)}
+        pp = _os.path.join(local_dir, "mosaic_merged_preview.jpg")
+        if _os.path.exists(pp):
+            out["merged_preview"] = {"path": pp, "size_bytes": _os.path.getsize(pp)}
+        return out
+
+    def _ssh_tar_stream(self, key_path, ssh_user, ip, remote_cmd, dest_dir, timeout=900):
+        import subprocess
+        ssh = subprocess.Popen(
+            ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "Compression=no",
+             "-i", key_path, f"{ssh_user}@{ip}", remote_cmd],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        tar = subprocess.Popen(["tar", "-C", dest_dir, "-xf", "-"], stdin=ssh.stdout)
+        ssh.stdout.close()
+        try:
+            tar_rc = tar.wait(timeout=timeout)
+            ssh_rc = ssh.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            tar.kill(); ssh.kill()
+            return False
+        return tar_rc == 0 and ssh_rc == 0
+
+    def _scp_sequential(self, key_path, ssh_user, ip, images, local_dir):
+        import os as _os, subprocess
+        jobs = []
+        for chunk in images.get("chunks", []) or []:
+            jobs.append((chunk["path"], _os.path.join(local_dir, chunk["name"] + ".jpg")))
         if images.get("merged"):
-            remote_path = images["merged"]["path"]
-            local_path = os.path.join(local_dir, "mosaic_merged.jpg")
-            try:
-                proc = subprocess.run(
-                    ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                     f"{ssh_user}@{ip}:{remote_path}", local_path],
-                    capture_output=True, text=True, timeout=120
-                )
-                if proc.returncode == 0 and _os.path.exists(local_path):
-                    task.local_images["merged"] = {
-                        "path": local_path,
-                        "size_bytes": _os.path.getsize(local_path),
-                    }
-            except Exception as e:
-                logger.warning(f"Could not download merged: {e}")
-
-        # Download preview
+            jobs.append((images["merged"]["path"], _os.path.join(local_dir, "mosaic_merged.jpg")))
         if images.get("merged_preview"):
-            remote_path = images["merged_preview"]["path"]
-            local_path = os.path.join(local_dir, "mosaic_merged_preview.jpg")
+            jobs.append((images["merged_preview"]["path"], _os.path.join(local_dir, "mosaic_merged_preview.jpg")))
+        for remote, local in jobs:
             try:
-                proc = subprocess.run(
-                    ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                     f"{ssh_user}@{ip}:{remote_path}", local_path],
-                    capture_output=True, text=True, timeout=60
+                subprocess.run(
+                    ["scp", "-o", "StrictHostKeyChecking=no", "-o", "Compression=no",
+                     "-i", key_path, f"{ssh_user}@{ip}:{remote}", local],
+                    capture_output=True, text=True, timeout=600,
                 )
-                if proc.returncode == 0 and _os.path.exists(local_path):
-                    task.local_images["merged_preview"] = {
-                        "path": local_path,
-                        "size_bytes": _os.path.getsize(local_path),
-                    }
             except Exception as e:
-                logger.warning(f"Could not download preview: {e}")
-
-        logger.info(f"Downloaded {len(task.local_images['chunks'])} chunks + merged to {local_dir}")
-
-        # Download DIY images (if available from compare mode)
-        diy_images = getattr(self, "_diy_pipeline_images", {})
-        if diy_images:
-            diy_local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task.task_id}-diy")
-            os.makedirs(diy_local_dir, exist_ok=True)
-            task.diy_local_images = {"chunks": [], "merged": None, "merged_preview": None}
-
-            for chunk in diy_images.get("chunks", []):
-                remote_path = chunk["path"]
-                local_name = f"{chunk['name']}.jpg"
-                local_path = os.path.join(diy_local_dir, local_name)
-                try:
-                    proc = subprocess.run(
-                        ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                         f"{ssh_user}@{ip}:{remote_path}", local_path],
-                        capture_output=True, text=True, timeout=60
-                    )
-                    if proc.returncode == 0 and _os.path.exists(local_path):
-                        task.diy_local_images["chunks"].append({
-                            "name": chunk["name"],
-                            "path": local_path,
-                            "size_bytes": _os.path.getsize(local_path),
-                        })
-                except Exception as e:
-                    logger.warning(f"Could not download DIY {remote_path}: {e}")
-
-            if diy_images.get("merged"):
-                remote_path = diy_images["merged"]["path"]
-                local_path = os.path.join(diy_local_dir, "mosaic_merged.jpg")
-                try:
-                    proc = subprocess.run(
-                        ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                         f"{ssh_user}@{ip}:{remote_path}", local_path],
-                        capture_output=True, text=True, timeout=120
-                    )
-                    if proc.returncode == 0 and _os.path.exists(local_path):
-                        task.diy_local_images["merged"] = {
-                            "path": local_path,
-                            "size_bytes": _os.path.getsize(local_path),
-                        }
-                except Exception as e:
-                    logger.warning(f"Could not download DIY merged: {e}")
-
-            if diy_images.get("merged_preview"):
-                remote_path = diy_images["merged_preview"]["path"]
-                local_path = os.path.join(diy_local_dir, "mosaic_merged_preview.jpg")
-                try:
-                    proc = subprocess.run(
-                        ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                         f"{ssh_user}@{ip}:{remote_path}", local_path],
-                        capture_output=True, text=True, timeout=60
-                    )
-                    if proc.returncode == 0 and _os.path.exists(local_path):
-                        task.diy_local_images["merged_preview"] = {
-                            "path": local_path,
-                            "size_bytes": _os.path.getsize(local_path),
-                        }
-                except Exception as e:
-                    logger.warning(f"Could not download DIY preview: {e}")
-
-            logger.info(f"Downloaded {len(task.diy_local_images['chunks'])} DIY chunks + merged")
+                logger.warning(f"scp error for {remote}: {e}")
 
     def _compare(self, cool: dict, diy: dict) -> dict:
         cool_time = cool.get("total_time_s", 0)
@@ -866,19 +902,22 @@ echo "Pipeline ready" > /tmp/pipeline_ready
         # During COOL run: COOL images available (from _last_pipeline_images), DIY from _diy_pipeline_images
         # After completion: both available from local downloads
 
+        primary_local_ready = bool(getattr(task, "download_complete", False) and local_images)
+        diy_local_ready = bool(getattr(task, "diy_download_complete", False) and diy_local_images)
+
         if getattr(task, "mode", "diy") == "diy":
-            # DIY-only: every image belongs to the DIY run and is stored under
-            # the local_images dir (served by /local-image).
-            diy_image_urls = _build_local_urls(local_images, "local-image") if local_images else _build_remote_urls(pipeline_images)
+            # DIY-only: images live in the primary local set (served by /local-image)
+            diy_image_urls = _build_local_urls(local_images, "local-image") if primary_local_ready else _build_remote_urls(pipeline_images)
             cool_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
         elif current_run in ("diy", "reconfiguring"):
             # Compare mode, DIY phase: _last_pipeline_images has DIY images
-            diy_image_urls = _build_local_urls(diy_local_images, "diy-image") if diy_local_images else _build_remote_urls(diy_pipeline_images or pipeline_images)
+            diy_image_urls = _build_local_urls(diy_local_images, "diy-image") if diy_local_ready else _build_remote_urls(diy_pipeline_images or pipeline_images)
             cool_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
         else:
-            # COOL run or completed: _last_pipeline_images has COOL images
-            cool_image_urls = _build_local_urls(local_images, "local-image") if local_images else _build_remote_urls(pipeline_images)
-            diy_image_urls = _build_local_urls(diy_local_images, "diy-image") if diy_local_images else _build_remote_urls(diy_pipeline_images)
+            # COOL phase / completed: keep serving the live instance images until
+            # the background download finishes, then switch to local files.
+            cool_image_urls = _build_local_urls(local_images, "local-image") if primary_local_ready else _build_remote_urls(pipeline_images)
+            diy_image_urls = _build_local_urls(diy_local_images, "diy-image") if diy_local_ready else _build_remote_urls(diy_pipeline_images)
 
         # pipeline_images = COOL images (for backward compat with frontend)
         image_urls = cool_image_urls

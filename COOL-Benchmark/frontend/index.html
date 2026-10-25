@@ -373,7 +373,10 @@
             applyImages(data);
             applyStageTimings(data);
 
-            if (status === "completed") {
+            // Results (timings) are published before the image download runs,
+            // so render them as soon as they exist instead of waiting for the
+            // "completed" status.
+            if (data.results) {
                 showResults(data.results, data.mode || currentMode);
             }
         }
