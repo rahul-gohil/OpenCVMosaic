@@ -128,7 +128,7 @@ class PipelineOrchestrator:
                     logger.info(f"Loaded marketplace config: COOL AMI={self.marketplace_ami_id}")
         except Exception as e:
             logger.warning(f"Could not load config-marketplace.json: {e}")
-        logger.info(f"DIY AMI (standard Graviton): {self.diy_ami_id}")
+        logger.info(f"Legacy DIY AMI (no longer used; DIY runs on the COOL AMI): {self.diy_ami_id}")
 
     async def initialize(self):
         try:
@@ -173,11 +173,16 @@ class PipelineOrchestrator:
             # Determine AMI and user data based on mode
             mode = getattr(task, "mode", "diy")
             if mode == "diy":
-                # DIY-only: use standard Graviton AMI with pip OpenCV
-                ami_id = self.diy_ami_id
-                user_data = self._get_diy_user_data()
-                task.ssh_user = "ec2-user"
-                logger.info(f"DIY mode: using standard Graviton AMI {ami_id}")
+                # DIY-only now uses the COOL AMI + pip OpenCV, so the only
+                # difference vs Compare mode is the OpenCV build. Running DIY
+                # on a different OS (AL2023) made single-mode and compare-mode
+                # numbers incomparable (OS accounted for ~9s of the gap).
+                ami_id = self.marketplace_ami_id
+                if not ami_id or ami_id.startswith("ami-to-be"):
+                    raise ValueError("COOL AMI not configured. Set MARKETPLACE_AMI_ID or config-marketplace.json")
+                user_data = self._get_user_data()
+                task.ssh_user = "ubuntu"
+                logger.info(f"DIY mode: using COOL AMI {ami_id} (will reconfigure to pip OpenCV)")
             elif mode == "cool":
                 # COOL-only: use COOL marketplace AMI
                 ami_id = self.marketplace_ami_id
@@ -236,8 +241,14 @@ class PipelineOrchestrator:
             mode = getattr(task, "mode", "diy")
 
             if mode == "diy":
+                # DIY-only: switch the COOL AMI to pip OpenCV first (same
+                # environment as the DIY run inside Compare mode).
+                task.current_run = "reconfiguring"
+                task.build_progress = {"current_step": "Reconfiguring to DIY", "progress_percent": 30}
+                await self._reconfigure_to_pip(ip)
+
                 task.current_run = "diy"
-                # DIY-only: run once with standard OpenCV
+                task.build_progress = {"current_step": "Running DIY pipeline", "progress_percent": 45}
                 diy_metrics = await self._run_pipeline_on_instance(
                     ip, task.chunk_size, work_dir="/tmp/scratchpad_diy"
                 )
@@ -374,67 +385,47 @@ class PipelineOrchestrator:
                         raise Exception(f"Lost connection to instance after 5 retries: {e}")
 
     async def _reconfigure_to_pip(self, ip: str):
-        """Reconfigure from COOL to DIY using system Python + pip OpenCV.
+        """Reconfigure to DIY using a dedicated Python 3.12 venv + pip OpenCV.
 
-        Uses SSH (not SSM). Avoids heredoc-in-bash-c issues by writing
-        the systemd service file via python3 -c instead of cat heredoc.
+        The COOL AMI runs COOL on Python 3.12, so DIY uses a plain Python 3.12
+        venv with ``opencv-python-headless``. Same OS, same Python version and
+        same interpreter build as COOL: the only remaining variable is the
+        OpenCV build itself.
         """
         pip_version = "5.0.0.93"
-
+        venv = "/opt/diy-venv"
 
         commands = [
-            # Step 1: Stop COOL MCP server
-            'echo "Step 1: Stopping COOL MCP server and unattended-upgrades..."',
+            # Step 1: stop the running (COOL) MCP server
+            'echo "Step 1: Stopping COOL MCP server..."',
             "sudo systemctl stop pipeline-mcp 2>/dev/null || true",
             "sudo systemctl stop unattended-upgrades 2>/dev/null || true",
             "sleep 2",
 
-            # Step 2: Install pip + OpenCV via system Python
-            'echo "Step 2: Installing OpenCV via pip (system Python)..."',
-            # python3-pip already installed during cloud-init; just ensure it's available
-            "sudo python3 -m ensurepip --upgrade 2>/dev/null || true",
-            # Wait for any dpkg lock to be released (unattended-upgrades)
-            'for i in $(seq 1 60); do if [ ! -f /var/lib/dpkg/lock-frontend ] || ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then break; fi; echo "Waiting for dpkg lock... ($i)"; sleep 2; done',
-            # If lock still held, wait more
-            'sleep 5',
-            # Install OpenCV via pip (no apt-get needed)
-            f"sudo pip3 install --break-system-packages --root-user-action=ignore opencv-python-headless=={pip_version} numpy scipy aiohttp || exit 1",
+            # Step 2: create / refresh the Python 3.12 venv and install pip OpenCV
+            'echo "Step 2: Creating Python 3.12 venv and installing pip OpenCV..."',
+            "test -x /usr/bin/python3.12 || (echo 'ERROR: /usr/bin/python3.12 missing' && exit 1)",
+            f"sudo /usr/bin/python3.12 -m venv {venv} || exit 1",
+            f"sudo {venv}/bin/pip install -q --upgrade pip || true",
+            f"sudo {venv}/bin/pip install -q opencv-python-headless=={pip_version} numpy scipy aiohttp || exit 1",
 
-            # Step 3: Register bundled wheel libs + fix cv2 bootstrap
-            # Use sudo for all file operations since SSH user is ubuntu (not root)
-            (
-                'echo "Step 3: Registering bundled wheel libs and fixing cv2 bootstrap..." && '
-                'SITE_PKG=$(python3 -c "import site; print(site.getsitepackages()[0])") && '
-                'LDCONF=/etc/ld.so.conf.d/pip-wheel-bundled.conf && '
-                'sudo truncate -s 0 "$LDCONF" && '
-                'for D in "$SITE_PKG/numpy.libs" "$SITE_PKG/opencv_python_headless.libs"; do '
-                '  [ -d "$D" ] && echo "$D" | sudo tee -a "$LDCONF" > /dev/null && echo "Registered: $D"; '
-                'done; '
-                'sudo ldconfig && '
-                'CV2_DIR="$SITE_PKG/cv2" && '
-                'ABI3="$CV2_DIR/cv2.abi3.so" && '
-                'PY312="$CV2_DIR/python-3.12" && '
-                'sudo rm -f "$PY312/cv2.cpython-312-aarch64-linux-gnu.so" 2>/dev/null; '
-                'sudo find "$CV2_DIR" -maxdepth 1 -name "cv2.cpython-*.so" -delete 2>/dev/null; '
-                '[ -f "$ABI3" ] && sudo mkdir -p "$PY312" && sudo ln -sf "$ABI3" "$PY312/cv2.abi3.so" && '
-                '  echo "Linked abi3 into python-3.12/"; '
-                "python3 -c 'import cv2; print(f\"DIY OpenCV {cv2.__version__} installed\")' || exit 1"
-            ),
+            # Step 3: verify the venv actually imports pip's OpenCV
+            'echo "Step 3: Verifying venv OpenCV..."',
+            f"cd {venv} && ./bin/python -c 'import sys, cv2, numpy; print(\"DIY python\", sys.version.split()[0]); print(\"DIY OpenCV\", cv2.__version__, cv2.__file__); print(\"DIY numpy\", numpy.__version__)' || exit 1",
 
-            # Step 4: Switching systemd to DIY (system Python)...
-            'echo "Step 4: Switching systemd to DIY (system Python)..."',
+            # Step 4: switch systemd to the venv interpreter
+            'echo "Step 4: Switching systemd to DIY venv..."',
             "sudo mv /tmp/pipeline-mcp-diy.service /etc/systemd/system/pipeline-mcp.service",
             "sudo systemctl daemon-reload",
 
-            # Step 5: Restart with DIY config
+            # Step 5: restart
             'echo "Step 5: Starting DIY MCP server..."',
             "sudo systemctl restart pipeline-mcp 2>/dev/null || true",
             "sleep 5",
 
-            # Step 6: Verify
+            # Step 6: verify service
             'echo "Step 6: Verifying DIY MCP server..."',
             'for i in $(seq 1 30); do STATUS=$(systemctl is-active pipeline-mcp 2>/dev/null || true); if [ "$STATUS" = "active" ]; then echo "MCP service active"; break; fi; echo "Waiting for MCP service... ($STATUS, ${i}s)"; sleep 1; done',
-            'curl -s http://localhost:8080/health || echo "MCP not yet responding"',
             'echo "DIY reconfiguration complete"',
         ]
 
@@ -442,7 +433,6 @@ class PipelineOrchestrator:
         key_path = os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem"))
         ssh_user = "ubuntu"
 
-        # Write systemd service file locally and SCP to instance (avoids SSH quoting issues)
         service_content = """[Unit]
 Description=Pipeline MCP Server (DIY pip)
 After=network.target
@@ -451,7 +441,7 @@ After=network.target
 Type=simple
 User=ubuntu
 Environment=PIPELINE_DIR=/opt/OpenCVMosaic
-ExecStart=/usr/bin/python3 /opt/pipeline-mcp-server.py
+ExecStart=/opt/diy-venv/bin/python /opt/pipeline-mcp-server.py
 Restart=always
 RestartSec=5
 StandardOutput=append:/tmp/pipeline-mcp.log
@@ -464,7 +454,6 @@ WantedBy=multi-user.target
             f.write(service_content)
             local_service_path = f.name
 
-        # SCP service file to instance
         scp_proc = subprocess.run(
             ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
              local_service_path, f"{ssh_user}@{ip}:/tmp/pipeline-mcp-diy.service"],
@@ -475,9 +464,8 @@ WantedBy=multi-user.target
 
         ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-i", key_path,
                    f"{ssh_user}@{ip}", " && ".join(commands)]
-        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=300)
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=600)
 
-        # Clean up temp file
         try:
             _os.unlink(local_service_path)
         except Exception:
@@ -485,11 +473,11 @@ WantedBy=multi-user.target
         if result.returncode != 0:
             logger.error(f"Reconfigure stdout: {result.stdout}")
             logger.error(f"Reconfigure stderr: {result.stderr}")
-            raise Exception(f"DIY reconfiguration failed: {result.stderr[:500]}")
+            raise Exception(f"DIY reconfiguration failed: {result.stderr[-800:]}")
 
-        # Wait for MCP server to be ready in DIY mode
+        # Wait until the MCP server reports DIY mode with pip OpenCV
         import asyncio
-        for i in range(30):
+        for _ in range(30):
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(f"http://{ip}:8080/health", timeout=aiohttp.ClientTimeout(total=5)) as resp:
@@ -498,8 +486,7 @@ WantedBy=multi-user.target
                             if not data.get("is_cool", True):
                                 logger.info(f"MCP server ready in DIY mode (OpenCV {data.get('opencv_version')}) on {ip}")
                                 return
-                            else:
-                                logger.warning(f"MCP server still in COOL mode, retrying... (is_cool={data.get('is_cool')})")
+                            logger.warning(f"MCP server still in COOL mode (is_cool={data.get('is_cool')}), retrying...")
             except Exception:
                 pass
             await asyncio.sleep(5)
@@ -772,9 +759,6 @@ fi
 cd /opt/OpenCVMosaic
 # Install aiohttp in COOL venv (for MCP server)
 /opt/cool/venvs/python_3.12/bin/pip install --quiet numpy scipy aiohttp 2>/dev/null || true
-# Ensure python3-pip is available for DIY comparison mode (installed via reconfigure if needed)
-apt-get update -y -qq 2>/dev/null || true
-apt-get install -y -qq python3-pip 2>/dev/null || true
 cp /opt/OpenCVMosaic/COOL-Benchmark/opencv-ami/pipeline-mcp-server.py /opt/pipeline-mcp-server.py
 # Create wrapper script that uses COOL venv Python with COOL's OpenCV
 cat > /opt/run-mcp.sh << 'WRAPPER'
@@ -807,60 +791,6 @@ systemctl daemon-reload
 systemctl enable pipeline-mcp
 systemctl start pipeline-mcp
 echo "Pipeline ready" > /tmp/pipeline_ready
-"""
-
-    def _get_diy_user_data(self) -> str:
-        """User data for standard Graviton AMI (no COOL) - installs pip OpenCV."""
-        return """#!/bin/bash
-set -e
-# Update system
-dnf update -y || apt-get update -y
-
-# Install Python, pip, git
-if command -v dnf &> /dev/null; then
-    dnf install -y python3 python3-pip git
-else
-    apt-get install -y python3 python3-pip git
-fi
-
-# Install OpenCV and dependencies via pip
-pip3 install --break-system-packages opencv-python-headless numpy scipy aiohttp psutil Pillow 2>/dev/null || pip3 install opencv-python-headless numpy scipy aiohttp psutil Pillow
-
-# Clone the pipeline code from GitHub (no AWS credentials needed)
-mkdir -p /opt
-cd /opt
-if [ ! -d "/opt/OpenCVMosaic" ]; then
-    git clone --depth 1 https://github.com/rahul-gohil/OpenCVMosaic.git /opt/OpenCVMosaic
-fi
-cd /opt/OpenCVMosaic
-
-# Deploy pipeline MCP server
-cp /opt/OpenCVMosaic/COOL-Benchmark/opencv-ami/pipeline-mcp-server.py /opt/pipeline-mcp-server.py
-chmod +x /opt/pipeline-mcp-server.py
-
-# Start the pipeline MCP server as a systemd service
-PYTHON=$(which python3)
-cat > /etc/systemd/system/pipeline-mcp.service << EOF
-[Unit]
-Description=Pipeline MCP Server (DIY OpenCV)
-After=network.target
-
-[Service]
-Type=simple
-User=root
-Environment=PYTHON=$PYTHON
-Environment=PIPELINE_DIR=/opt/OpenCVMosaic
-ExecStart=$PYTHON /opt/pipeline-mcp-server.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload
-systemctl enable pipeline-mcp
-systemctl start pipeline-mcp
-echo "DIY Pipeline ready" > /tmp/pipeline_ready
 """
 
     async def get_benchmark_status(self, task_id: str) -> dict:
@@ -928,8 +858,13 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
         # During COOL run: COOL images available (from _last_pipeline_images), DIY from _diy_pipeline_images
         # After completion: both available from local downloads
 
-        if current_run in ("diy", "reconfiguring"):
-            # DIY run: _last_pipeline_images has DIY images
+        if getattr(task, "mode", "diy") == "diy":
+            # DIY-only: every image belongs to the DIY run and is stored under
+            # the local_images dir (served by /local-image).
+            diy_image_urls = _build_local_urls(local_images, "local-image") if local_images else _build_remote_urls(pipeline_images)
+            cool_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
+        elif current_run in ("diy", "reconfiguring"):
+            # Compare mode, DIY phase: _last_pipeline_images has DIY images
             diy_image_urls = _build_local_urls(diy_local_images, "diy-image") if diy_local_images else _build_remote_urls(diy_pipeline_images or pipeline_images)
             cool_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
         else:

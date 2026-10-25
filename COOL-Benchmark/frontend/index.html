@@ -49,7 +49,7 @@
 <body>
     <div class="container">
         <h1>OpenCVMosaic Pipeline Benchmark</h1>
-        <p class="subtitle">Run OpenCVMosaic pipeline on AWS Graviton — DIY (pip) or COOL (marketplace) OpenCV</p>
+        <p class="subtitle">Run OpenCVMosaic pipeline on AWS Graviton — DIY (pip) vs COOL (marketplace) OpenCV, same OS/hardware</p>
 
         <div class="card">
             <h2>Configuration</h2>
@@ -60,7 +60,7 @@
             <div class="form-row">
                 <label>Mode:</label>
                 <select id="mode">
-                    <option value="diy" selected>DIY Only (pip OpenCV — no AMI needed)</option>
+                    <option value="diy" selected>DIY Only (pip OpenCV, same COOL AMI)</option>
                     <option value="cool">COOL Only (requires COOL AMI)</option>
                     <option value="compare">Compare (requires COOL AMI)</option>
                 </select>
@@ -236,8 +236,8 @@
             const mode = document.getElementById("mode").value;
             const amiId = document.getElementById("ami-id").value;
 
-            if (mode !== "diy" && !amiId) {
-                alert("Please enter the COOL AMI ID for COOL/Compare mode");
+            if (!amiId) {
+                alert("Please enter the COOL AMI ID (used for all modes now, so DIY and COOL run on the same OS)");
                 return;
             }
 
