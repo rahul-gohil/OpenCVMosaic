@@ -200,6 +200,7 @@
         let currentKeyPath = '~/.ssh/mosaic-key.pem';
         let usingLocalImages = false;
         let coolUsingLocalImages = false;
+        const gallerySource = { "-cool": null, "-diy": null };
 
         function log(msg) {
             const el = document.getElementById("log");
@@ -301,6 +302,8 @@
             // reset galleries / timings / grid state
             usingLocalImages = false;
             coolUsingLocalImages = false;
+            gallerySource["-cool"] = null;
+            gallerySource["-diy"] = null;
             ["cool", "diy"].forEach(k => {
                 document.getElementById("strips-gallery-" + k).innerHTML = "";
                 document.getElementById("merged-preview-" + k).innerHTML = "";
@@ -466,12 +469,25 @@
             const isLocal = images.chunks && images.chunks.length > 0 && images.chunks[0].url &&
                 /(local-image|cool-image|diy-image)/.test(images.chunks[0].url);
             const isCoolGallery = suffix === "-cool";
-            const flag = isCoolGallery ? coolUsingLocalImages : usingLocalImages;
-            if (isLocal && !flag) {
-                if (isCoolGallery) coolUsingLocalImages = true;
-                else usingLocalImages = true;
+
+            // The gallery must be rebuilt whenever the underlying image source
+            // changes (different run work dir, or remote -> local). Chunk names
+            // are identical across runs, so without this the COOL gallery would
+            // keep showing the DIY images.
+            const firstChunk = (images.chunks && images.chunks[0] && images.chunks[0].url) || "";
+            const mergedCandidate = (images.merged_preview && images.merged_preview.url) || (images.merged && images.merged.url) || "";
+            const sourceSig = firstChunk || mergedCandidate;
+            if (sourceSig && gallerySource[suffix] !== sourceSig) {
+                gallerySource[suffix] = sourceSig;
                 gallery.innerHTML = "";
                 mergedDiv.innerHTML = "";
+                if (isCoolGallery) coolUsingLocalImages = false;
+                else usingLocalImages = false;
+            }
+
+            if (isLocal) {
+                if (isCoolGallery) coolUsingLocalImages = true;
+                else usingLocalImages = true;
             }
 
             const existingNames = new Set(Array.from(gallery.querySelectorAll("img")).map(i => i.dataset.name));

@@ -297,6 +297,7 @@ class PipelineOrchestrator:
 
                 # Save DIY images before reconfiguring back to COOL
                 self._diy_pipeline_images = getattr(self, "_last_pipeline_images", {}).copy()
+                self._last_pipeline_images = {}
 
                 # Reconfigure back to COOL
                 task.current_run = "reconfiguring"
@@ -338,6 +339,13 @@ class PipelineOrchestrator:
 
     async def _run_pipeline_on_instance(self, ip: str, chunk_size: int, work_dir: str = None) -> dict:
         import asyncio as _asyncio
+        # Drop images from the previous run immediately. Otherwise the status
+        # endpoint keeps serving the previous run's images as if they belonged
+        # to the run that is just starting (e.g. the DIY mosaic appearing in the
+        # COOL gallery until the first COOL poll).
+        self._last_pipeline_images = {}
+        self._last_pipeline_stage = ""
+        self._last_pipeline_pct = 0
         async with aiohttp.ClientSession() as session:
             # Start pipeline (returns immediately now)
             if work_dir is None:
