@@ -7,7 +7,7 @@
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #2d3748; }
-        .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
         h1 { color: #2d3748; margin-bottom: 8px; }
         .subtitle { color: #718096; margin-bottom: 24px; }
         .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
@@ -20,30 +20,44 @@
         .btn-primary:hover { background: #5a67d8; }
         .btn-primary:disabled { background: #a0aec0; cursor: not-allowed; }
         .btn-danger { background: #e53e3e; color: white; }
+        .btn-danger:disabled { background: #a0aec0; cursor: not-allowed; }
         .status { padding: 12px; border-radius: 6px; margin-bottom: 12px; }
+        .status.pending, .status.staging { background: #edf2f7; color: #4a5568; }
         .status.running { background: #ebf8ff; color: #2b6cb0; }
         .status.completed { background: #f0fff4; color: #276749; }
         .status.downloading { background: #fefcbf; color: #744210; }
         .status.failed { background: #fff5f5; color: #c53030; }
-        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-        .metrics-grid.single { grid-template-columns: 1fr; max-width: 450px; margin: 0 auto; }
-        .metric-card { background: #f7fafc; border-radius: 6px; padding: 12px; }
+        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+        .metrics-grid.one-col { grid-template-columns: 1fr; }
+        .metrics-grid.single { grid-template-columns: 1fr; max-width: 480px; margin: 0 auto; }
+        .metric-card { background: #f7fafc; border-radius: 6px; padding: 12px; min-width: 0; }
         .metric-card h3 { font-size: 0.9em; color: #718096; margin-bottom: 8px; }
-        .metric-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #e2e8f0; }
+        .metric-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #e2e8f0; gap: 12px; }
         .metric-row:last-child { border-bottom: none; }
         .metric-label { color: #4a5568; }
-        .metric-value { font-weight: 600; color: #2d3748; }
-        .speedup { font-size: 1.2em; color: #38a169; font-weight: 700; }
+        .metric-value { font-weight: 600; color: #2d3748; text-align: right; word-break: break-all; }
+        .speedup { font-size: 1.1em; color: #38a169; font-weight: 700; }
+        .speedup.parity { color: #4a5568; }
         .progress-bar { height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; margin-top: 8px; }
         .progress-fill { height: 100%; background: #667eea; transition: width 0.3s; }
         #log { background: #1a202c; color: #e2e8f0; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.85em; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
         .image-gallery { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-        .image-gallery img { width: 120px; height: 80px; object-fit: cover; border-radius: 4px; border: 1px solid #e2e8f0; cursor: pointer; }
+        .image-gallery img { width: 112px; height: 75px; object-fit: cover; border-radius: 4px; border: 1px solid #e2e8f0; cursor: pointer; }
         .image-gallery img:hover { border-color: #667eea; }
+        .merged-preview { margin-top: 12px; text-align: center; }
+        .merged-preview p { font-size: 0.85em; color: #718096; margin-bottom: 4px; }
+        .merged-preview img { width: 100%; height: auto; border-radius: 6px; border: 1px solid #e2e8f0; cursor: pointer; }
+        .merged-preview a { display: block; margin-top: 8px; font-size: 0.85em; color: #667eea; }
         .stage-timings { background: #f7fafc; border-radius: 6px; padding: 12px; margin-top: 8px; }
         .stage-timings h4 { font-size: 0.85em; color: #718096; margin-bottom: 6px; }
         .stage-row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 0.9em; }
+        .hint { font-size: 0.8em; color: #718096; margin-bottom: 12px; margin-left: 132px; }
         .hidden { display: none; }
+        @media (max-width: 760px) {
+            .metrics-grid { grid-template-columns: 1fr; }
+            .metrics-grid.single { max-width: none; }
+            .hint { margin-left: 0; }
+        }
     </style>
 </head>
 <body>
@@ -60,31 +74,28 @@
             <div class="form-row">
                 <label>Mode:</label>
                 <select id="mode">
-                    <option value="diy" selected>DIY Only (pip OpenCV, same COOL AMI)</option>
-                    <option value="cool">COOL Only (requires COOL AMI)</option>
-                    <option value="compare">Compare (requires COOL AMI)</option>
+                    <option value="diy" selected>DIY Only (pip OpenCV, on COOL AMI)</option>
+                    <option value="cool">COOL Only</option>
+                    <option value="compare">Compare (DIY then COOL)</option>
                 </select>
             </div>
             <div class="form-row">
                 <label>Instance Type:</label>
                 <select id="instance-type">
-                    <option value="m7g.large">m7g.large (2 vCPU)</option>
-                    <option value="m7g.xlarge" selected>m7g.xlarge (4 vCPU)</option>
-                    <option value="m7g.2xlarge">m7g.2xlarge (8 vCPU)</option>
-                    <option value="m8g.large">m8g.large (2 vCPU)</option>
-                    <option value="m8g.xlarge">m8g.xlarge (4 vCPU)</option>
-                    <option value="m8g.2xlarge">m8g.2xlarge (8 vCPU)</option>
-                    <option value="m9g.large">m9g.large (2 vCPU, COOL AMI only)</option>
-                    <option value="m9g.xlarge">m9g.xlarge (4 vCPU, COOL AMI only)</option>
-                    <option value="m9g.2xlarge">m9g.2xlarge (8 vCPU, COOL AMI only)</option>
+                    <option value="m9g.large">m9g.large (2 vCPU)</option>
+                    <option value="m9g.xlarge" selected>m9g.xlarge (4 vCPU)</option>
+                    <option value="m9g.2xlarge">m9g.2xlarge (8 vCPU)</option>
+                    <option value="c9g.large">c9g.large (2 vCPU)</option>
+                    <option value="c9g.xlarge">c9g.xlarge (4 vCPU)</option>
+                    <option value="c9g.2xlarge">c9g.2xlarge (8 vCPU)</option>
                 </select>
             </div>
-            <div style="font-size:0.8em;color:#718096;margin-bottom:12px;margin-left:132px;">
-                All types shown are within the 8 vCPU account limit.
+            <div class="hint">
+                The COOL AMI is built for Graviton5 (m9g/c9g). All types shown are within the 8 vCPU account limit.
             </div>
             <div class="form-row" id="ami-row">
                 <label>AMI ID:</label>
-                <input type="text" id="ami-id" value="" placeholder="ami-xxxxxxxxx (COOL Graviton5, optional for DIY)">
+                <input type="text" id="ami-id" value="" placeholder="ami-xxxxxxxxx (COOL Graviton5, required for all modes)">
             </div>
             <div class="form-row">
                 <button class="btn btn-primary" id="run-btn" onclick="runBenchmark()">Run Benchmark</button>
@@ -99,11 +110,11 @@
         </div>
 
         <div class="card hidden" id="instance-card">
-            <h2>Instance Info & Remote Logs</h2>
+            <h2>Instance Info &amp; Remote Logs</h2>
             <div class="metric-row"><span class="metric-label">Instance ID</span><span class="metric-value" id="inst-id">-</span></div>
             <div class="metric-row"><span class="metric-label">Public IP</span><span class="metric-value" id="inst-ip">-</span></div>
             <div class="metric-row"><span class="metric-label">Instance Type</span><span class="metric-value" id="inst-type">-</span></div>
-            <div class="metric-row"><span class="metric-label">SSH Command</span><span class="metric-value" id="inst-ssh" style="font-size:0.8em;word-break:break-all;">-</span></div>
+            <div class="metric-row"><span class="metric-label">SSH Command</span><span class="metric-value" id="inst-ssh" style="font-size:0.8em;">-</span></div>
             <div style="margin-top:12px;">
                 <button class="btn btn-danger" id="terminate-btn" onclick="terminateInstance()" style="font-size:0.85em;padding:6px 12px;">Terminate Instance</button>
                 <button class="btn btn-primary" id="logs-btn" onclick="fetchLogs()" style="font-size:0.85em;padding:6px 12px;margin-left:8px;">Fetch Instance Logs</button>
@@ -112,22 +123,19 @@
         </div>
 
         <div class="card hidden" id="images-card">
-            <h2>Generated Strips & Merged Result</h2>
+            <h2>Generated Strips &amp; Merged Result</h2>
             <div class="metrics-grid" id="images-grid">
-                <div class="metric-card">
+                <div class="metric-card" id="panel-cool">
                     <h3 id="images-title-cool">COOL (OpenCV 5.1.0)</h3>
                     <div id="strips-gallery-cool" class="image-gallery"></div>
-                    <div id="merged-preview-cool" style="margin-top:12px;text-align:center;"></div>
+                    <div id="merged-preview-cool" class="merged-preview"></div>
                 </div>
-                <div class="metric-card">
+                <div class="metric-card" id="panel-diy">
                     <h3 id="images-title-diy">DIY (OpenCV 5.0.0)</h3>
                     <div id="strips-gallery-diy" class="image-gallery"></div>
-                    <div id="merged-preview-diy" style="margin-top:12px;text-align:center;"></div>
+                    <div id="merged-preview-diy" class="merged-preview"></div>
                 </div>
             </div>
-            <!-- Hidden legacy IDs for backward compat with single-mode -->
-            <div id="strips-gallery" class="image-gallery" style="display:none;"></div>
-            <div id="merged-preview" style="display:none;"></div>
             <div id="stage-timings" class="stage-timings" style="display:none;">
                 <h4 id="stage-title">Total Chunk Processing</h4>
                 <div id="stage-rows"></div>
@@ -160,7 +168,7 @@
 
         <div class="card hidden" id="results-card">
             <h2>Results</h2>
-            <div class="metrics-grid">
+            <div class="metrics-grid" id="results-grid">
                 <div class="metric-card">
                     <h3>COOL (OpenCV 5.1.0)</h3>
                     <div id="cool-metrics"></div>
@@ -184,38 +192,7 @@
     <script>
         const API = "";  // same origin when served by orchestrator
 
-        // Prefill S3 paths from server config
-        (async function loadConfig() {
-            try {
-                const resp = await fetch(API + "/api/config");
-                const cfg = await resp.json();
-                if (cfg.ami_id) document.getElementById("ami-id").value = cfg.ami_id;
-                if (cfg.key_path) currentKeyPath = cfg.key_path;
-            } catch (e) { /* ignore */ }
-            // Restore task from URL hash
-            const hashMatch = location.hash.match(/task=([a-f0-9-]+)/);
-            if (hashMatch) {
-                currentTaskId = hashMatch[1];
-                try {
-                    const resp = await fetch(API + "/api/benchmark/" + currentTaskId + "/status");
-                    const data = await resp.json();
-                    if (data.status === "completed") {
-                        showResults(data.results, data.mode || currentMode);
-                        document.getElementById("run-btn").disabled = false;
-                        document.getElementById("stop-btn").disabled = true;
-                    } else if (data.status === "failed") {
-                        log("FAILED: " + (data.error || "unknown error"));
-                        document.getElementById("run-btn").disabled = false;
-                        document.getElementById("stop-btn").disabled = true;
-                    } else {
-                        pollStatus();
-                        startLogPolling();
-                    }
-                } catch (e) {
-                    log("Could not restore task: " + e.message);
-                }
-            }
-        })();
+        // ---- state (declared before any async init to avoid TDZ) ----
         let currentTaskId = null;
         let pollInterval = null;
         let logInterval = null;
@@ -230,48 +207,110 @@
             el.scrollTop = el.scrollHeight;
         }
 
+        function setRunning(running) {
+            document.getElementById("run-btn").disabled = running;
+            document.getElementById("stop-btn").disabled = !running;
+        }
+
+        function setPanels(mode) {
+            const coolPanel = document.getElementById("panel-cool");
+            const diyPanel = document.getElementById("panel-diy");
+            const grid = document.getElementById("images-grid");
+            const showCool = mode !== "diy";
+            const showDiy = mode !== "cool";
+            coolPanel.style.display = showCool ? "" : "none";
+            diyPanel.style.display = showDiy ? "" : "none";
+            // two columns only when both panels are visible
+            grid.classList.toggle("one-col", !(showCool && showDiy));
+        }
+
+        // ---- startup ----
+        (async function init() {
+            try {
+                const resp = await fetch(API + "/api/config");
+                const cfg = await resp.json();
+                if (cfg.ami_id) document.getElementById("ami-id").value = cfg.ami_id;
+                if (cfg.key_path) currentKeyPath = cfg.key_path;
+            } catch (e) { /* ignore */ }
+
+            const hashMatch = location.hash.match(/task=([a-f0-9-]+)/);
+            if (hashMatch) {
+                currentTaskId = hashMatch[1];
+                await restoreTask();
+            }
+        })();
+
+        async function restoreTask() {
+            try {
+                const resp = await fetch(API + "/api/benchmark/" + currentTaskId + "/status");
+                const data = await resp.json();
+                if (data.error) throw new Error(data.error);
+                currentMode = data.mode || "diy";
+                document.getElementById("mode").value = currentMode;
+                if (data.chunk_size) document.getElementById("chunk-size").value = data.chunk_size;
+
+                applyStatus(data);
+
+                if (data.status === "completed" || data.status === "failed") {
+                    setRunning(false);
+                } else {
+                    setRunning(true);
+                    pollStatus();
+                    startLogPolling();
+                }
+            } catch (e) {
+                log("Could not restore task: " + e.message);
+            }
+        }
+
         async function runBenchmark() {
-            const chunkSize = parseInt(document.getElementById("chunk-size").value);
+            const chunkSize = parseInt(document.getElementById("chunk-size").value, 10);
             const instanceType = document.getElementById("instance-type").value;
             const mode = document.getElementById("mode").value;
-            const amiId = document.getElementById("ami-id").value;
+            const amiId = document.getElementById("ami-id").value.trim();
 
             if (!amiId) {
-                alert("Please enter the COOL AMI ID (used for all modes now, so DIY and COOL run on the same OS)");
+                alert("Please enter the COOL AMI ID (used for all modes, so DIY and COOL run on the same OS)");
+                return;
+            }
+            if (!Number.isFinite(chunkSize) || chunkSize < 1) {
+                alert("Please enter a valid chunk size");
                 return;
             }
 
             currentMode = mode;
-            document.getElementById("run-btn").disabled = true;
-            document.getElementById("stop-btn").disabled = false;
+            setRunning(true);
             document.getElementById("status-card").classList.remove("hidden");
             document.getElementById("instance-card").classList.remove("hidden");
+            document.getElementById("images-card").classList.add("hidden");
             document.getElementById("results-card").classList.add("hidden");
             document.getElementById("instance-logs").style.display = "none";
+            document.getElementById("instance-logs").textContent = "";
             document.getElementById("log").textContent = "";
-            // Reset image panels for new run
+            document.getElementById("status-text").textContent = "Starting...";
+            document.getElementById("status-text").className = "status staging";
+            document.getElementById("progress-fill").style.width = "0%";
+            document.getElementById("speedup-text").textContent = "";
+
+            // reset instance fields
+            document.getElementById("inst-id").textContent = "-";
+            document.getElementById("inst-ip").textContent = "-";
+            document.getElementById("inst-type").textContent = "-";
+            document.getElementById("inst-ssh").textContent = "-";
+
+            // reset galleries / timings / grid state
             usingLocalImages = false;
             coolUsingLocalImages = false;
-            // Show/hide image panels based on mode
-            const coolPanel = document.getElementById("images-title-cool").parentElement;
-            const diyPanel = document.getElementById("images-title-diy").parentElement;
-            if (mode === "diy") {
-                coolPanel.style.display = "none";
-                diyPanel.style.display = "block";
-            } else if (mode === "cool") {
-                coolPanel.style.display = "block";
-                diyPanel.style.display = "none";
-            } else {
-                coolPanel.style.display = "block";
-                diyPanel.style.display = "block";
-            }
-            // Clear galleries
-            document.getElementById("strips-gallery-cool").innerHTML = "";
-            document.getElementById("merged-preview-cool").innerHTML = "";
-            document.getElementById("strips-gallery-diy").innerHTML = "";
-            document.getElementById("merged-preview-diy").innerHTML = "";
-            document.getElementById("strips-gallery").innerHTML = "";
-            document.getElementById("merged-preview").innerHTML = "";
+            ["cool", "diy"].forEach(k => {
+                document.getElementById("strips-gallery-" + k).innerHTML = "";
+                document.getElementById("merged-preview-" + k).innerHTML = "";
+            });
+            document.getElementById("stage-timings").style.display = "none";
+            document.getElementById("stage-timings-2").style.display = "none";
+            document.getElementById("merge-timing").style.display = "none";
+            document.getElementById("merge-timing-2").style.display = "none";
+            document.getElementById("results-grid").classList.remove("single");
+            setPanels(mode);
 
             log("Starting benchmark...");
 
@@ -296,94 +335,121 @@
                 startLogPolling();
             } catch (e) {
                 log("Error: " + e.message);
-                document.getElementById("run-btn").disabled = false;
-                document.getElementById("stop-btn").disabled = true;
+                setRunning(false);
+            }
+        }
+
+        // Applies a /status payload to the UI. Used by polling and by restore.
+        function applyStatus(data) {
+            const status = data.status || "unknown";
+            const progress = data.build_progress || {};
+            const pct = progress.progress_percent || 0;
+            const step = progress.current_step || status;
+
+            document.getElementById("status-card").classList.remove("hidden");
+            document.getElementById("status-text").textContent = step + " (" + pct + "%)";
+            document.getElementById("status-text").className = "status " + status;
+            document.getElementById("progress-fill").style.width = pct + "%";
+
+            if (data.instance_id) document.getElementById("instance-card").classList.remove("hidden");
+
+            // instance info
+            if (data.instance_id) {
+                document.getElementById("inst-id").textContent = data.instance_id;
+                document.getElementById("inst-type").textContent = data.instance_type || "-";
+            }
+            if (data.instance_ip) {
+                document.getElementById("inst-ip").textContent = data.instance_ip;
+                const sshUser = data.ssh_user || "ec2-user";
+                const keyPath = data.key_path || currentKeyPath;
+                currentKeyPath = keyPath;
+                document.getElementById("inst-ssh").textContent =
+                    "ssh -i " + keyPath + " " + sshUser + "@" + data.instance_ip;
+            }
+
+            applyImages(data);
+            applyStageTimings(data);
+
+            if (status === "completed") {
+                showResults(data.results, data.mode || currentMode);
+            }
+        }
+
+        function applyImages(data) {
+            const mode = data.mode || currentMode;
+            const compare = mode === "compare";
+            const run = data.current_run || "cool";
+
+            let coolImgs = data.cool_pipeline_images;
+            let diyImgs = data.diy_pipeline_images;
+
+            if (mode === "diy") {
+                diyImgs = diyImgs && diyImgs.chunks && diyImgs.chunks.length ? diyImgs : data.pipeline_images;
+            } else if (mode === "cool") {
+                coolImgs = coolImgs && coolImgs.chunks && coolImgs.chunks.length ? coolImgs : data.pipeline_images;
+            } else {
+                // compare: pipeline_images refers to the active run
+                if (run === "diy" || run === "reconfiguring") {
+                    diyImgs = diyImgs && diyImgs.chunks && diyImgs.chunks.length ? diyImgs : data.pipeline_images;
+                } else {
+                    coolImgs = coolImgs && coolImgs.chunks && coolImgs.chunks.length ? coolImgs : data.pipeline_images;
+                }
+            }
+
+            const hasAny = (x) => !!(x && ((x.chunks && x.chunks.length) || x.merged || x.merged_preview));
+            let any = false;
+            if (hasAny(coolImgs)) { updateImageGallery(coolImgs, "cool", compare); any = true; }
+            if (hasAny(diyImgs)) { updateImageGallery(diyImgs, "diy", compare); any = true; }
+            if (any || data.instance_ip) {
+                document.getElementById("images-card").classList.remove("hidden");
+            }
+        }
+
+        function applyStageTimings(data) {
+            const mode = data.mode || currentMode;
+            const results = data.results;
+            if (!results) return;
+
+            if (mode === "compare") {
+                document.getElementById("stage-timings").style.display = "block";
+                document.getElementById("stage-timings-2").style.display = "block";
+                document.getElementById("stage-title").textContent = "Total Chunk Processing (COOL)";
+                document.getElementById("stage-title-2").textContent = "Total Chunk Processing (DIY)";
+                if (results.cool && results.cool.per_stage_timings) showStageTimings(results.cool.per_stage_timings, results.cool.merge_time_s, results.cool.merge_stage_timings, "");
+                if (results.diy && results.diy.per_stage_timings) showStageTimings(results.diy.per_stage_timings, results.diy.merge_time_s, results.diy.merge_stage_timings, "-2");
+            } else if (mode === "diy" && results.diy && results.diy.per_stage_timings) {
+                document.getElementById("stage-timings").style.display = "block";
+                document.getElementById("stage-timings-2").style.display = "none";
+                document.getElementById("stage-title").textContent = "Total Chunk Processing (DIY)";
+                showStageTimings(results.diy.per_stage_timings, results.diy.merge_time_s, results.diy.merge_stage_timings, "");
+            } else if (mode === "cool" && results.cool && results.cool.per_stage_timings) {
+                document.getElementById("stage-timings").style.display = "block";
+                document.getElementById("stage-timings-2").style.display = "none";
+                document.getElementById("stage-title").textContent = "Total Chunk Processing (COOL)";
+                showStageTimings(results.cool.per_stage_timings, results.cool.merge_time_s, results.cool.merge_stage_timings, "");
             }
         }
 
         function pollStatus() {
+            if (pollInterval) clearInterval(pollInterval);
             pollInterval = setInterval(async () => {
                 try {
                     const resp = await fetch(API + "/api/benchmark/" + currentTaskId + "/status");
                     const data = await resp.json();
+                    if (data.error) throw new Error(data.error);
+                    applyStatus(data);
 
-                    const status = data.status || "unknown";
-                    const progress = data.build_progress || {};
-                    const pct = progress.progress_percent || 0;
-                    const step = progress.current_step || status;
-
-                    document.getElementById("status-text").textContent = step + " (" + pct + "%)";
-                    document.getElementById("status-text").className = "status " + status;
-                    document.getElementById("progress-fill").style.width = pct + "%";
-
-                    // Show images card once instance is running
-                    if (data.instance_ip && document.getElementById("images-card").classList.contains("hidden")) {
-                        document.getElementById("images-card").classList.remove("hidden");
-                    }
-
-                    // Update images gallery - target based on current_run from server
-                    const isCompare = currentMode === "compare";
-                    if (data.pipeline_images) {
-                        const currentRun = data.current_run || "cool";
-                        let target = "cool";
-                        if (currentRun === "diy" || currentRun === "completed") target = "diy";
-                        if (!isCompare && currentMode === "diy") target = "diy";
-                        if (!isCompare && currentMode === "cool") target = "cool";
-                        updateImageGallery(data.pipeline_images, target, isCompare);
-                    }
-                    // Update COOL gallery with saved COOL images (if available)
-                    if (isCompare && data.cool_pipeline_images && data.cool_pipeline_images.chunks && data.cool_pipeline_images.chunks.length > 0) {
-                        updateImageGallery(data.cool_pipeline_images, "cool", isCompare);
-                    }
-                    // Update DIY gallery with saved DIY images (if available)
-                    if (isCompare && data.diy_pipeline_images && data.diy_pipeline_images.chunks && data.diy_pipeline_images.chunks.length > 0) {
-                        updateImageGallery(data.diy_pipeline_images, "diy", isCompare);
-                    }
-
-                    // Update per-stage timings
-                    if (currentMode === "compare" && data.results) {
-                        document.getElementById("stage-timings").style.display = "block";
-                        document.getElementById("stage-timings-2").style.display = "block";
-                        document.getElementById("stage-title").textContent = "Total Chunk Processing (COOL)";
-                        document.getElementById("stage-title-2").textContent = "Total Chunk Processing (DIY)";
-                        if (data.results.cool && data.results.cool.per_stage_timings) showStageTimings(data.results.cool.per_stage_timings, data.results.cool.merge_time_s, data.results.cool.merge_stage_timings, "");
-                        if (data.results.diy && data.results.diy.per_stage_timings) showStageTimings(data.results.diy.per_stage_timings, data.results.diy.merge_time_s, data.results.diy.merge_stage_timings, "-2");
-                    } else if (data.results && data.results.diy && data.results.diy.per_stage_timings) {
-                        document.getElementById("stage-timings").style.display = "block";
-                        document.getElementById("stage-timings-2").style.display = "none";
-                        showStageTimings(data.results.diy.per_stage_timings, data.results.diy.merge_time_s, data.results.diy.merge_stage_timings, "");
-                    } else if (data.results && data.results.cool && data.results.cool.per_stage_timings) {
-                        document.getElementById("stage-timings").style.display = "block";
-                        document.getElementById("stage-timings-2").style.display = "none";
-                        showStageTimings(data.results.cool.per_stage_timings, data.results.cool.merge_time_s, data.results.cool.merge_stage_timings, "");
-                    }
-
-                    // Update instance info
-                    if (data.instance_id) {
-                        document.getElementById("inst-id").textContent = data.instance_id;
-                        document.getElementById("inst-type").textContent = data.instance_type || "-";
-                    }
-                    if (data.instance_ip) {
-                        document.getElementById("inst-ip").textContent = data.instance_ip;
-                        const sshUser = data.ssh_user || "ec2-user";
-                        const keyPath = data.key_path || currentKeyPath;
-                        currentKeyPath = keyPath;
-                        document.getElementById("inst-ssh").textContent =
-                            "ssh -i " + keyPath + " " + sshUser + "@" + data.instance_ip;
-                    }
-
-                    if (status === "completed") {
+                    if (data.status === "completed") {
                         clearInterval(pollInterval);
+                        pollInterval = null;
                         stopLogPolling();
-                        showResults(data.results, currentMode);
-                        document.getElementById("run-btn").disabled = false;
-                        document.getElementById("stop-btn").disabled = true;
-                    } else if (status === "failed") {
+                        setRunning(false);
+                    } else if (data.status === "failed") {
                         clearInterval(pollInterval);
+                        pollInterval = null;
                         stopLogPolling();
                         log("FAILED: " + (data.error || "unknown error"));
-                        document.getElementById("run-btn").disabled = false;
-                        document.getElementById("stop-btn").disabled = true;
+                        setRunning(false);
                     }
                 } catch (e) {
                     log("Poll error: " + e.message);
@@ -392,23 +458,14 @@
         }
 
         function updateImageGallery(images, target, isCompare) {
-            target = target || "cool";
-            // Determine gallery suffix based on mode and target
-            let suffix = "";
-            if (isCompare) {
-                suffix = (target === "diy") ? "-diy" : "-cool";
-            } else {
-                suffix = (currentMode === "diy") ? "-diy" : "-cool";
-            }
-            const galleryId = "strips-gallery" + suffix;
-            const mergedId = "merged-preview" + suffix;
-            const gallery = document.getElementById(galleryId);
-            const mergedDiv = document.getElementById(mergedId);
-            if (!gallery || !mergedDiv) return;
+            const suffix = "-" + (target === "diy" ? "diy" : "cool");
+            const gallery = document.getElementById("strips-gallery" + suffix);
+            const mergedDiv = document.getElementById("merged-preview" + suffix);
+            if (!gallery || !mergedDiv || !images) return;
 
-            // If we just switched to local images, clear the gallery
-            const isLocal = images.chunks && images.chunks.length > 0 && images.chunks[0].url && (images.chunks[0].url.includes("local-image") || images.chunks[0].url.includes("cool-image") || images.chunks[0].url.includes("diy-image"));
-            const isCoolGallery = galleryId.includes("cool");
+            const isLocal = images.chunks && images.chunks.length > 0 && images.chunks[0].url &&
+                /(local-image|cool-image|diy-image)/.test(images.chunks[0].url);
+            const isCoolGallery = suffix === "-cool";
             const flag = isCoolGallery ? coolUsingLocalImages : usingLocalImages;
             if (isLocal && !flag) {
                 if (isCoolGallery) coolUsingLocalImages = true;
@@ -416,9 +473,8 @@
                 gallery.innerHTML = "";
                 mergedDiv.innerHTML = "";
             }
-            const existingNames = new Set(Array.from(gallery.querySelectorAll("img")).map(i => i.dataset.name));
 
-            // Add new strip thumbnails
+            const existingNames = new Set(Array.from(gallery.querySelectorAll("img")).map(i => i.dataset.name));
             (images.chunks || []).forEach(chunk => {
                 if (!existingNames.has(chunk.name)) {
                     const img = document.createElement("img");
@@ -430,28 +486,21 @@
                 }
             });
 
-            // Show merged result (use preview if available, else full)
             const mergedUrl = (images.merged_preview && images.merged_preview.url) || (images.merged && images.merged.url);
-            if (mergedUrl) {
-                if (!mergedDiv.querySelector("img")) {
-                    const p = document.createElement("p");
-                    p.style.cssText = "font-size:0.85em;color:#718096;margin-bottom:4px;";
-                    p.textContent = "Merged Result (preview):";
-                    const img = document.createElement("img");
-                    img.src = mergedUrl + "&t=" + Date.now();
-                    img.style.cssText = "max-width:100%;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer;";
-                    img.onclick = () => window.open(mergedUrl, "_blank");
-                    img.onerror = () => { img.alt = "Failed to load merged image"; img.style.border = "1px solid #e53e3e"; };
-                    mergedDiv.appendChild(p);
-                    mergedDiv.appendChild(img);
-                }
+            if (mergedUrl && !mergedDiv.querySelector("img")) {
+                const p = document.createElement("p");
+                p.textContent = "Merged Result (preview):";
+                const img = document.createElement("img");
+                img.src = mergedUrl + (mergedUrl.includes("?") ? "&" : "?") + "t=" + Date.now();
+                img.onclick = () => window.open(mergedUrl, "_blank");
+                img.onerror = () => { img.alt = "Failed to load merged image"; img.style.border = "1px solid #e53e3e"; };
+                mergedDiv.appendChild(p);
+                mergedDiv.appendChild(img);
             }
-            // Add download link for full-resolution mosaic
             if (images.merged && images.merged.download_url && !mergedDiv.querySelector("a")) {
                 const link = document.createElement("a");
                 link.href = images.merged.download_url;
-                link.textContent = "Download Full Mosaic (" + (images.merged.size_bytes / 1e6).toFixed(1) + " MB)";
-                link.style.cssText = "display:block;margin-top:8px;font-size:0.85em;color:#667eea;";
+                link.textContent = "Download full mosaic (" + (images.merged.size_bytes / 1e6).toFixed(1) + " MB)";
                 mergedDiv.appendChild(link);
             }
         }
@@ -463,6 +512,7 @@
             const mergeEl = document.getElementById("merge-timing" + suffix);
             if (!timings || timings.frames === 0) { el.style.display = "none"; return; }
             el.style.display = "block";
+
             const load = timings.load || 0;
             const sift = timings.sift || 0;
             const matching = timings.matching || 0;
@@ -479,72 +529,53 @@
                     <tr><td style="padding:2px 0;">Stitching</td><td style="text-align:right;font-weight:600;">${stitching.toFixed(2)}s</td></tr>
                     <tr><td style="padding:2px 0;">Saving (write canvas)</td><td style="text-align:right;font-weight:600;">${saving.toFixed(2)}s</td></tr>
                     <tr style="border-top:1px solid #e2e8f0;"><td style="padding:4px 0 2px 0;">Total time</td><td style="text-align:right;padding:4px 0 2px 0;">${chunkTotal}s</td></tr>
-                    <tr><td style="padding:2px 0;font-size:0.85em;color:#718096;">Frames processed</td><td style="text-align:right;padding:2px 0;font-size:0.85em;color:#718096;">${timings.frames} (incl. overlap)</td></tr>
+                    <tr><td style="padding:2px 0;font-size:0.85em;color:#718096;">Frames processed</td><td style="text-align:right;padding:2px 0;font-size:0.85em;color:#718096;">${timings.frames} (incl. chunk overlaps)</td></tr>
                 </table>
-                <div style="font-size:0.75em;color:#a0aec0;margin-top:4px;">86 unique images, 4 overlap frames counted twice across 5 chunks</div>
             `;
+
             if (mergeTime) {
                 mergeEl.style.display = "block";
                 const mv = document.getElementById("merge-time-val" + suffix);
                 if (mv) mv.textContent = mergeTime + "s";
                 if (mergeStageTimings) {
-                    const ms = document.getElementById("merge-sift" + suffix);
-                    const mm = document.getElementById("merge-matching" + suffix);
-                    const mh = document.getElementById("merge-homography" + suffix);
-                    const mst = document.getElementById("merge-stitching" + suffix);
-                    if (ms) ms.textContent = (mergeStageTimings.sift || '-') + "s";
-                    if (mm) mm.textContent = (mergeStageTimings.matching || '-') + "s";
-                    if (mh) mh.textContent = (mergeStageTimings.homography || '-') + "s";
-                    if (mst) mst.textContent = (mergeStageTimings.stitching || '-') + "s";
+                    const map = {
+                        "merge-sift": mergeStageTimings.sift,
+                        "merge-matching": mergeStageTimings.matching,
+                        "merge-homography": mergeStageTimings.homography,
+                        "merge-stitching": mergeStageTimings.stitching
+                    };
+                    Object.entries(map).forEach(([id, val]) => {
+                        const node = document.getElementById(id + suffix);
+                        if (node) node.textContent = (val != null ? val : "-") + "s";
+                    });
                 }
+            } else {
+                mergeEl.style.display = "none";
             }
         }
 
         function showResults(results, mode) {
-            // In single mode, hide the other image panel
-            if (mode === "diy") {
-                document.getElementById("images-title-cool").parentElement.style.display = "none";
-            } else if (mode === "cool") {
-                document.getElementById("images-title-diy").parentElement.style.display = "none";
-            }
-            // Show stage timings from results
+            if (!results) return;
+            document.getElementById("results-card").classList.remove("hidden");
+            setPanels(mode);
+
             const diy = results.diy || {};
             const cool = results.cool || {};
             const cmp = results.comparison || {};
-            if (mode === "diy" && diy.per_stage_timings) {
-                document.getElementById("stage-timings").style.display = "block";
-                document.getElementById("stage-timings-2").style.display = "none";
-                document.getElementById("stage-title").textContent = "Total Chunk Processing";
-                showStageTimings(diy.per_stage_timings, diy.merge_time_s, diy.merge_stage_timings, "");
-            } else if (mode === "cool" && cool.per_stage_timings) {
-                document.getElementById("stage-timings").style.display = "block";
-                document.getElementById("stage-timings-2").style.display = "none";
-                document.getElementById("stage-title").textContent = "Total Chunk Processing";
-                showStageTimings(cool.per_stage_timings, cool.merge_time_s, cool.merge_stage_timings, "");
-            } else if (mode === "compare") {
-                document.getElementById("stage-timings").style.display = "block";
-                document.getElementById("stage-timings-2").style.display = "block";
-                document.getElementById("stage-title").textContent = "Total Chunk Processing (COOL)";
-                document.getElementById("stage-title-2").textContent = "Total Chunk Processing (DIY)";
-                if (cool.per_stage_timings) showStageTimings(cool.per_stage_timings, cool.merge_time_s, cool.merge_stage_timings, "");
-                if (diy.per_stage_timings) showStageTimings(diy.per_stage_timings, diy.merge_time_s, diy.merge_stage_timings, "-2");
-            }
-            document.getElementById("results-card").classList.remove("hidden");
-            const grid = document.querySelector(".metrics-grid");
+            const grid = document.getElementById("results-grid");
 
-            function metricCard(id, m, title, chunkTimings, mergeTimings) {
+            function metricCard(id, m, title) {
                 const el = document.getElementById(id);
-                const parent = el.parentElement;
-                if (title) parent.querySelector("h3").textContent = title;
-                const ct = chunkTimings || (m.per_stage_timings || {});
-                const mt = mergeTimings || (m.merge_stage_timings || {});
+                if (!el) return;
+                el.parentElement.querySelector("h3").textContent = title;
+                const ct = m.per_stage_timings || {};
+                const mt = m.merge_stage_timings || {};
                 const load = ((ct.load || 0) + (mt.load || 0)).toFixed(2);
                 const sift = ((ct.sift || 0) + (mt.sift || 0)).toFixed(2);
                 const matching = ((ct.matching || 0) + (mt.matching || 0)).toFixed(2);
                 const homography = ((ct.homography || 0) + (mt.homography || 0)).toFixed(2);
                 const stitching = ((ct.stitching || 0) + (mt.stitching || 0)).toFixed(2);
                 const saving = ((ct.saving || 0) + (mt.saving || 0)).toFixed(2);
-                const stageTotal = (parseFloat(load) + parseFloat(sift) + parseFloat(matching) + parseFloat(homography) + parseFloat(stitching) + parseFloat(saving)).toFixed(2);
                 el.innerHTML = `
                     <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
                         <tr><td style="padding:2px 0;">Total time</td><td style="text-align:right;font-weight:600;">${(m.total_time_s || 0).toFixed(2)}s</td></tr>
@@ -556,8 +587,8 @@
                         <tr><td style="padding:2px 0;">Homography</td><td style="text-align:right;">${homography}s</td></tr>
                         <tr><td style="padding:2px 0;">Stitching</td><td style="text-align:right;">${stitching}s</td></tr>
                         <tr><td style="padding:2px 0;">Saving</td><td style="text-align:right;">${saving}s</td></tr>
-                        <tr><td style="padding:2px 0;">Canvas</td><td style="text-align:right;">${m.canvas_mpx || '-'} Mpx</td></tr>
-                        <tr><td style="padding:2px 0;">OpenCV</td><td style="text-align:right;">${m.opencv_version || '-'}${m.is_cool ? ' (COOL)' : ' (pip)'}</td></tr>
+                        <tr><td style="padding:2px 0;">Canvas</td><td style="text-align:right;">${m.canvas_mpx != null ? m.canvas_mpx + " Mpx" : "-"}</td></tr>
+                        <tr><td style="padding:2px 0;">OpenCV</td><td style="text-align:right;">${m.opencv_version || "-"}${m.is_cool ? " (COOL)" : " (pip)"}</td></tr>
                     </table>
                 `;
             }
@@ -569,30 +600,42 @@
                 coolCard.style.display = "none";
                 diyCard.style.display = "block";
                 grid.classList.add("single");
-                metricCard("diy-metrics", diy, "DIY (OpenCV pip)", diy.per_stage_timings, diy.merge_stage_timings);
+                metricCard("diy-metrics", diy, "DIY (OpenCV " + (diy.opencv_version || "pip") + ")");
             } else if (mode === "cool") {
                 coolCard.style.display = "block";
                 diyCard.style.display = "none";
                 grid.classList.add("single");
-                metricCard("cool-metrics", cool, "COOL (OpenCV marketplace)", cool.per_stage_timings, cool.merge_stage_timings);
+                metricCard("cool-metrics", cool, "COOL (OpenCV " + (cool.opencv_version || "COOL") + ")");
             } else {
                 coolCard.style.display = "block";
                 diyCard.style.display = "block";
                 grid.classList.remove("single");
-                metricCard("cool-metrics", cool, "COOL (OpenCV 5.1.0)", cool.per_stage_timings, cool.merge_stage_timings);
-                metricCard("diy-metrics", diy, "DIY (OpenCV 5.0.0)", diy.per_stage_timings, diy.merge_stage_timings);
-                if (cmp.speedup) {
-                    document.getElementById("speedup-text").textContent =
-                        "COOL is " + cmp.speedup + "x faster (saved " + cmp.time_saved_s + "s)";
+                metricCard("cool-metrics", cool, "COOL (OpenCV " + (cool.opencv_version || "COOL") + ")");
+                metricCard("diy-metrics", diy, "DIY (OpenCV " + (diy.opencv_version || "pip") + ")");
+
+                const speedEl = document.getElementById("speedup-text");
+                const ct = cool.total_time_s || 0;
+                const dt = diy.total_time_s || 0;
+                speedEl.classList.remove("parity");
+                if (ct > 0 && dt > 0) {
+                    const ratio = dt / ct; // >1 => COOL faster
+                    if (Math.abs(ratio - 1) < 0.01) {
+                        speedEl.textContent = "Parity: COOL " + ct.toFixed(2) + "s vs DIY " + dt.toFixed(2) + "s (" + ratio.toFixed(2) + "x)";
+                        speedEl.classList.add("parity");
+                    } else if (ratio > 1) {
+                        speedEl.textContent = "COOL is " + ratio.toFixed(2) + "x faster (saved " + (dt - ct).toFixed(2) + "s)";
+                    } else {
+                        speedEl.textContent = "DIY is " + (1 / ratio).toFixed(2) + "x faster (saved " + (ct - dt).toFixed(2) + "s)";
+                    }
                 } else {
-                    document.getElementById("speedup-text").textContent = "";
+                    speedEl.textContent = "";
                 }
             }
         }
 
         async function terminateInstance() {
             if (!currentTaskId) return;
-            if (!confirm("Terminate the EC2 instance?")) return;
+            if (!confirm("Terminate the EC2 instance? The running benchmark will be lost.")) return;
             try {
                 const resp = await fetch(API + "/api/benchmark/" + currentTaskId + "/terminate", { method: "POST" });
                 const data = await resp.json();
@@ -606,7 +649,6 @@
             if (!currentTaskId) return;
             const el = document.getElementById("instance-logs");
             el.style.display = "block";
-            el.textContent = "Loading...";
             try {
                 const resp = await fetch(API + "/api/benchmark/" + currentTaskId + "/logs");
                 const data = await resp.json();
@@ -616,7 +658,6 @@
             }
         }
 
-        // Auto-refresh logs every 10s while running
         function startLogPolling() {
             if (logInterval) clearInterval(logInterval);
             logInterval = setInterval(fetchLogs, 25000);
@@ -627,13 +668,23 @@
         }
 
         async function stopBenchmark() {
-            if (currentTaskId) {
-                clearInterval(pollInterval);
-                stopLogPolling();
-                log("Benchmark stopped by user");
-                document.getElementById("run-btn").disabled = false;
-                document.getElementById("stop-btn").disabled = true;
+            if (!currentTaskId) return;
+            if (!confirm("Stop the benchmark and terminate the EC2 instance?")) return;
+            if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+            stopLogPolling();
+            try {
+                const resp = await fetch(API + "/api/benchmark/" + currentTaskId + "/terminate", { method: "POST" });
+                const data = await resp.json();
+                log(data.message || data.error || "Instance terminated");
+            } catch (e) {
+                log("Stop error: " + e.message);
             }
+            location.hash = "";
+            document.getElementById("status-text").textContent = "Stopped by user";
+            document.getElementById("status-text").className = "status failed";
+            document.getElementById("progress-fill").style.width = "0%";
+            log("Benchmark stopped by user");
+            setRunning(false);
         }
     </script>
 </body>
