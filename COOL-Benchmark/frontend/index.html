@@ -113,8 +113,21 @@
 
         <div class="card hidden" id="images-card">
             <h2>Generated Strips & Merged Result</h2>
-            <div id="strips-gallery" class="image-gallery"></div>
-            <div id="merged-preview" style="margin-top:12px;text-align:center;"></div>
+            <div class="metrics-grid" id="images-grid">
+                <div class="metric-card">
+                    <h3 id="images-title-cool">COOL (OpenCV 5.1.0)</h3>
+                    <div id="strips-gallery-cool" class="image-gallery"></div>
+                    <div id="merged-preview-cool" style="margin-top:12px;text-align:center;"></div>
+                </div>
+                <div class="metric-card">
+                    <h3 id="images-title-diy">DIY (OpenCV 5.0.0)</h3>
+                    <div id="strips-gallery-diy" class="image-gallery"></div>
+                    <div id="merged-preview-diy" style="margin-top:12px;text-align:center;"></div>
+                </div>
+            </div>
+            <!-- Hidden legacy IDs for backward compat with single-mode -->
+            <div id="strips-gallery" class="image-gallery" style="display:none;"></div>
+            <div id="merged-preview" style="display:none;"></div>
             <div id="stage-timings" class="stage-timings" style="display:none;">
                 <h4 id="stage-title">Total Chunk Processing</h4>
                 <div id="stage-rows"></div>
@@ -212,6 +225,28 @@
             document.getElementById("results-card").classList.add("hidden");
             document.getElementById("instance-logs").style.display = "none";
             document.getElementById("log").textContent = "";
+            // Reset image panels for new run
+            usingLocalImages = false;
+            // Show/hide image panels based on mode
+            const coolPanel = document.getElementById("images-title-cool").parentElement;
+            const diyPanel = document.getElementById("images-title-diy").parentElement;
+            if (mode === "diy") {
+                coolPanel.style.display = "none";
+                diyPanel.style.display = "block";
+            } else if (mode === "cool") {
+                coolPanel.style.display = "block";
+                diyPanel.style.display = "none";
+            } else {
+                coolPanel.style.display = "block";
+                diyPanel.style.display = "block";
+            }
+            // Clear galleries
+            document.getElementById("strips-gallery-cool").innerHTML = "";
+            document.getElementById("merged-preview-cool").innerHTML = "";
+            document.getElementById("strips-gallery-diy").innerHTML = "";
+            document.getElementById("merged-preview-diy").innerHTML = "";
+            document.getElementById("strips-gallery").innerHTML = "";
+            document.getElementById("merged-preview").innerHTML = "";
 
             log("Starting benchmark...");
 
@@ -260,9 +295,18 @@
                         document.getElementById("images-card").classList.remove("hidden");
                     }
 
-                    // Update images gallery
+                    // Update images gallery - target based on current run
                     if (data.pipeline_images) {
-                        updateImageGallery(data.pipeline_images);
+                        const isCompare = currentMode === "compare";
+                        const results = data.results || {};
+                        const coolDone = !!results.cool;
+                        const diyDone = !!results.diy;
+                        // During COOL run (no diy results yet), update COOL gallery
+                        // During DIY run (cool done but no diy), update DIY gallery
+                        let target = "cool";
+                        if (isCompare && coolDone) target = "diy";
+                        if (!isCompare && currentMode === "diy") target = "diy";
+                        updateImageGallery(data.pipeline_images, target, isCompare);
                     }
 
                     // Update per-stage timings
@@ -316,11 +360,19 @@
             }, 5000);
         }
 
-        function updateImageGallery(images) {
-            const gallery = document.getElementById("strips-gallery");
-            const mergedDiv = document.getElementById("merged-preview");
+        function updateImageGallery(images, target, isCompare) {
+            target = target || "cool";
+            const suffix = (isCompare && target === "diy") ? "-diy" : (isCompare ? "-cool" : "");
+            // For single mode, use unsuffixed IDs
+            const useSuffix = isCompare ? suffix : "";
+            const galleryId = useSuffix ? "strips-gallery" + useSuffix : "strips-gallery";
+            const mergedId = useSuffix ? "merged-preview" + useSuffix : "merged-preview";
+            const gallery = document.getElementById(galleryId);
+            const mergedDiv = document.getElementById(mergedId);
+            if (!gallery || !mergedDiv) return;
+
             // If we just switched to local images, clear the gallery
-            const isLocal = images.chunks.length > 0 && images.chunks[0].url.includes("local-image");
+            const isLocal = images.chunks && images.chunks.length > 0 && images.chunks[0].url && images.chunks[0].url.includes("local-image");
             if (isLocal && !usingLocalImages) {
                 usingLocalImages = true;
                 gallery.innerHTML = "";
@@ -411,6 +463,12 @@
         }
 
         function showResults(results, mode) {
+            // In single mode, hide the other image panel
+            if (mode === "diy") {
+                document.getElementById("images-title-cool").parentElement.style.display = "none";
+            } else if (mode === "cool") {
+                document.getElementById("images-title-diy").parentElement.style.display = "none";
+            }
             // Show stage timings from results
             const diy = results.diy || {};
             const cool = results.cool || {};
