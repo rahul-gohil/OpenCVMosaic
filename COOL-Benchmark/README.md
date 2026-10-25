@@ -104,7 +104,7 @@ export AWS_PROFILE=my-profile
 ## Run
 
 ```bash
-python pipeline-benchmark/pipeline-orchestrator.py
+python3 pipeline-benchmark/pipeline-orchestrator.py
 ```
 
 Open <http://localhost:8080/>, choose a mode, instance type and chunk size
@@ -127,7 +127,7 @@ to COOL.
 
 ---
 
-## What is measured
+## Measured Metrics
 
 Per chunk (aggregated over all chunks, exact timings):
 

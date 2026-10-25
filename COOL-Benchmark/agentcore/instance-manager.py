@@ -737,8 +737,9 @@ async def main():
     await manager.initialize()
     
     try:
-        # Example: Launch and manage instances
-        instance_id = await manager.launch_instance("m7g.large", "ami-12345678")
+        # Example only: pass your own COOL Graviton5 AMI (m9g/c9g family).
+        # There is no AMI baked into this repository.
+        instance_id = await manager.launch_instance("m9g.xlarge", "ami-xxxxxxxxxxxxxxxxx")
         ready = await manager.wait_for_instance_ready(instance_id)
         
         if ready:
