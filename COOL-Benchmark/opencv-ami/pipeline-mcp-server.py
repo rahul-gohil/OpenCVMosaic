@@ -16,7 +16,6 @@ import os
 import sys
 import time
 import subprocess
-import base64
 import threading
 import glob
 import csv
@@ -70,7 +69,6 @@ def _set_progress(step, pct):
 
 def _run_pipeline_sync(chunk_size, work_dir):
     """Run the pipeline synchronously (called in a background thread)."""
-    global pipeline_state
     _set_state(status="running", start_time=time.perf_counter(), work_dir=work_dir)
 
     try:
@@ -79,7 +77,6 @@ def _run_pipeline_sync(chunk_size, work_dir):
         if not os.path.isdir(input_dir):
             raise Exception(f"Assets directory not found: {input_dir}")
         pipeline_state["progress"] = {"current_step": "Loading local assets", "progress_percent": 5}
-        dl_time = 0.0
 
         # Build a clean subprocess env. Only keep PYTHONPATH/LD_LIBRARY_PATH
         # when the current mode actually set them (COOL). This guarantees DIY
@@ -155,7 +152,6 @@ def _run_pipeline_sync(chunk_size, work_dir):
 
         # Step 4: Skip upload (no S3) - results available via image gallery
         _set_progress("Finalizing", 90)
-        ul_time = 0.0
 
         total_time = time.perf_counter() - pipeline_state["start_time"]
 
@@ -297,7 +293,6 @@ async def handle_health(request):
 
 
 async def handle_start_pipeline(request):
-    global pipeline_state
     if _get_state("status") == "running":
         return web.json_response({"error": "Pipeline already running"}, status=409)
 

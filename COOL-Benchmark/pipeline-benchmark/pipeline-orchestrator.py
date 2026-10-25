@@ -24,10 +24,9 @@ import os
 import re
 import sys
 import time
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Any
+from typing import Dict, Optional, Any
 
 import aiohttp
 from aiohttp import web
@@ -209,8 +208,6 @@ class PipelineOrchestrator:
 
     async def _execute_benchmark(self, task_id: str):
         task = self.tasks[task_id]
-        import time
-        start_time = time.time()
         instance_id = None
 
         try:
@@ -661,7 +658,7 @@ exec /opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py
         await asyncio.to_thread(self._download_results_sync, task, ip)
 
     def _download_results_sync(self, task, ip: str):
-        import os as _os, tempfile
+        import tempfile
         from concurrent.futures import ThreadPoolExecutor
 
         key_path = os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem"))
@@ -722,7 +719,7 @@ exec /opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py
         ``/full-mosaic`` endpoint. Set ``DOWNLOAD_FULL_CHUNKS=1`` to restore the
         old behaviour (download every full-size chunk).
         """
-        import os as _os, shutil, subprocess, shlex
+        import os as _os, shutil, shlex
 
         chunks = images.get("chunks", []) or []
         merged = images.get("merged")
@@ -1265,7 +1262,7 @@ async def create_app():
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
 
-        import subprocess, tempfile
+        import subprocess
         cache = meta.get("cache_path")
         expected = int(meta.get("size_bytes") or 0)
         have_cache = bool(cache and os.path.exists(cache) and (not expected or os.path.getsize(cache) == expected))

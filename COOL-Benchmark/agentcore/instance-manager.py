@@ -5,7 +5,6 @@ Handles auto-scaling, load balancing, and cost tracking
 """
 
 import asyncio
-import json
 import logging
 import os
 import random
@@ -427,7 +426,6 @@ class InstanceManager:
                 if inst.state == InstanceState.RUNNING and inst.instance_type == instance_type
             ]
             
-            current_capacity = sum(inst.max_load for inst in running_instances)
             required_instances = max(1, min(max_instances, (target_load + 9) // 10))  # 10 images per instance
             
             launched_instances = []
@@ -540,7 +538,6 @@ class InstanceManager:
 # OpenCV MCP Server code would be inserted here
 # This includes the full opencv-mcp-server.py content
 import asyncio
-import json
 from mcp.server import Server
 # ... rest of the server code
 """
