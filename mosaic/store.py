@@ -129,7 +129,9 @@ class MosaicFeatureStore:
         )
 
     # ------------------------------------------------------------------ update
-    def update(self, features: FeatureSet, G: np.ndarray) -> int:
+    def update(
+        self, features: FeatureSet, G: np.ndarray, frame_id: Optional[int] = None
+    ) -> int:
         """Add the features of a frame to the store.
 
         The keypoints are mapped into the mosaic coordinates with ``G`` and
@@ -146,13 +148,17 @@ class MosaicFeatureStore:
 
         replaced = self._replaced_indices(warped)
 
-        frame_id = self._next_frame_id
-        self._next_frame_id += 1
+        if frame_id is None:
+            fid = self._next_frame_id
+            self._next_frame_id += 1
+        else:
+            fid = int(frame_id)
+            self._next_frame_id = max(self._next_frame_id, fid + 1)
 
         if self._descriptors is None or len(self._points) == 0:
             points = warped.astype(np.float32)
             descriptors = features.descriptors
-            frames = np.full(len(warped), frame_id, np.int32)
+            frames = np.full(len(warped), fid, np.int32)
         else:
             keep = np.ones(len(self._points), bool)
             if len(replaced):
@@ -160,7 +166,7 @@ class MosaicFeatureStore:
             points = np.vstack([self._points[keep], warped.astype(np.float32)])
             descriptors = np.vstack([self._descriptors[keep], features.descriptors])
             frames = np.concatenate(
-                [self._frames[keep], np.full(len(warped), frame_id, np.int32)]
+                [self._frames[keep], np.full(len(warped), fid, np.int32)]
             )
 
         self._points = points
@@ -183,6 +189,9 @@ class MosaicFeatureStore:
             return np.empty((0,), np.int64)
 
         cell = self._cell()
+        # NOTE: the search cell (>= 64 px) is used as the replacement radius.
+        # Changing this alters the feature density and therefore the produced
+        # mosaics; it is intentionally left as-is for output compatibility.
         cell_sq = cell * cell
         replaced = set()
 
@@ -214,10 +223,11 @@ class MosaicFeatureStore:
     def _enforce_limit(self) -> None:
         """Drop the oldest frame when the store grows past its limit."""
         limit = int(self.config.max_features)
-        if limit <= 0 or len(self._points) <= limit:
+        if limit <= 0:
             return
-        oldest = int(self._frames.min())
-        keep = self._frames != oldest
-        self._points = self._points[keep]
-        self._descriptors = self._descriptors[keep]
-        self._frames = self._frames[keep]
+        while len(self._points) > limit:
+            oldest = int(self._frames.min())
+            keep = self._frames != oldest
+            self._points = self._points[keep]
+            self._descriptors = self._descriptors[keep]
+            self._frames = self._frames[keep]

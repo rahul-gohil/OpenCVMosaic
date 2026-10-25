@@ -376,10 +376,9 @@ class MosaicMerger:
                     for k in ("sift", "matching", "homography", "stitching"):
                         self._merge_timings[k] = self._merge_timings.get(k, 0.0) + merge_timings.get(k, 0.0)
                 except RuntimeError as error:
-                    self.log(f"  {os.path.basename(left)} + {os.path.basename(right)}"
-                             f" -> SKIPPED ({error})")
-                    nxt.append(left)
-                    continue
+                    raise RuntimeError(
+                        f"could not merge {left} + {right}: {error}"
+                    ) from error
                 cx0, cy0, cx1, cy1 = content_bbox(mask)
                 cx0 = max(0, cx0 - 64); cy0 = max(0, cy0 - 64)
                 cx1 = min(canvas.shape[1], cx1 + 64); cy1 = min(canvas.shape[0], cy1 + 64)
@@ -388,8 +387,10 @@ class MosaicMerger:
                             [cv2.IMWRITE_JPEG_QUALITY, self.quality])
                 cv2.imwrite(os.path.splitext(out_path)[0] + "_mask.png",
                             np.asarray(mask)[cy0:cy1, cx0:cx1])
+                left_name = os.path.basename(os.path.dirname(left)) or os.path.basename(left)
+                right_name = os.path.basename(os.path.dirname(right)) or os.path.basename(right)
                 self.log(
-                    f"  {os.path.basename(left)} + {os.path.basename(right)}"
+                    f"  {left_name} + {right_name}"
                     f" -> {os.path.basename(out_path)}"
                     f"  {cx1-cx0}x{cy1-cy0}"
                     f"  inliers {reg.inliers}/{reg.matches} residual {reg.reprojection_error:.2f}px"

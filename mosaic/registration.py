@@ -31,6 +31,14 @@ MIN_SCALE = 0.2
 MAX_SCALE = 5.0
 
 
+def homogeneous_divide(projected: np.ndarray) -> np.ndarray:
+    """Cartesian coordinates of homogeneous points, safe for ``w <= 0``."""
+    w = projected[:, 2:3]
+    eps = np.finfo(np.float64).eps
+    safe = np.where(np.abs(w) > eps, w, np.nan)
+    return projected[:, :2] / safe
+
+
 @dataclass
 class Registration:
     """Outcome of a pairwise registration attempt."""
@@ -202,10 +210,7 @@ def _reprojection_error(H: np.ndarray, src: np.ndarray, dst: np.ndarray) -> floa
     homogeneous = np.column_stack(
         [np.asarray(src, np.float64).reshape(-1, 2), np.ones(len(src))]
     )
-    projected = homogeneous @ H.T
-    projected = projected[:, :2] / np.maximum(
-        projected[:, 2:3], np.finfo(np.float64).eps
-    )
+    projected = homogeneous_divide(homogeneous @ H.T)
     residuals = np.linalg.norm(projected - np.asarray(dst, np.float64).reshape(-1, 2), axis=1)
     return float(np.median(residuals))
 
@@ -228,10 +233,7 @@ def _homography_scale(H: np.ndarray, source_points: np.ndarray) -> float:
     if not np.any(usable):
         return 1.0
     homogeneous = np.column_stack([pts[usable], np.ones(int(usable.sum()))])
-    mapped = homogeneous @ H.T
-    mapped = mapped[:, :2] / np.maximum(
-        mapped[:, 2:3], np.finfo(np.float64).eps
-    )
+    mapped = homogeneous_divide(homogeneous @ H.T)
     # The scale is the ratio of the spread of the mapped points around their
     # own centroid and the spread of the source points around theirs.
     mapped_centre = mapped.mean(axis=0)
@@ -259,6 +261,4 @@ def transform_points(H: np.ndarray, points: np.ndarray) -> np.ndarray:
         return points
     homogeneous = np.column_stack([points, np.ones(len(points))])
     mapped = homogeneous @ np.asarray(H, dtype=np.float64).T
-    return mapped[:, :2] / np.maximum(
-        mapped[:, 2:3], np.finfo(np.float64).eps
-    )
+    return homogeneous_divide(mapped)

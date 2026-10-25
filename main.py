@@ -5,8 +5,8 @@ The pipeline follows the processing procedure of the paper "Real-Time 2D
 Orthomosaic Mapping from UAV Video via Feature-Based Image Registration"
 (Appl. Sci. 2026, 16, 2133), restricted to still images:
 
-    read -> SIFT -> match -> homography -> warp onto the canvas -> multi-band
-    blend -> write the canvas
+    read -> SIFT -> match -> homography -> warp onto the canvas -> blend
+    (overwrite or feather) -> write the canvas
 
 Example
 -------
@@ -42,104 +42,10 @@ from mosaic.chunker import ChunkRunner
 DEFAULT_DATASET = "datasets/UAVPistachio/images_nadir_RGB"
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Return the command line parser of the pipeline."""
-    parser = argparse.ArgumentParser(
-        description=(
-            "Build a 2D orthomosaic from an ordered image sequence with SIFT "
-            "matching, a planar homography and the blending rule of the paper."
-        ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-
-    parser.add_argument("--dataset", default=DEFAULT_DATASET, help="folder with the images")
-    parser.add_argument("--pattern", default="*.JPG", help="glob pattern of the images")
-    parser.add_argument("--start", type=int, default=None, help="index of the first frame")
-    parser.add_argument("--end", type=int, default=None, help="index of the last frame")
-
-    group = parser.add_argument_group("registration")
-    group = parser.add_argument_group("registration")
-    group.add_argument(
-        "--registration",
-        default="mosaic",
-        choices=["mosaic", "frame"],
-        help=(
-            "register a frame against the accumulated mosaic (no drift) or "
-            "against its predecessor and accumulate the transforms"
-        ),
-    )
-    group.add_argument(
-        "--min-inliers", type=int, default=20, help="minimum inlier support to accept a frame"
-    )
-    group.add_argument(
-        "--store-min-distance",
-        type=float,
-        default=40.0,
-        help="minimum distance in pixels between two features of the mosaic store",
-    )
-    group.add_argument(
-        "--query-margin",
-        type=float,
-        default=1500.0,
-        help="margin around the predicted position used to select the store features",
-    )
-    group.add_argument(
-        "--grounding-window",
-        type=int,
-        default=6,
-        help="number of recent frames whose matches describe the relative motion",
-    )
-    group.add_argument(
-        "--store-max-features",
-        type=int,
-        default=50000,
-        help="maximum number of features kept in the mosaic store",
-    )
-    group.add_argument(
-        "--no-relink",
-        action="store_true",
-        help="drop a frame instead of re-linking it to the last accepted one",
-    )
-
-    group = parser.add_argument_group("blending")
-    group.add_argument(
-        "--blend",
-        default="overwrite",
-        choices=["feather", "overwrite"],
-        help="blending strategy (overwrite = the method of the paper)",
-    )
-    group.add_argument(
-        "--blend-ramp", type=int, default=32, help="width of the transition band in pixels"
-    )
-
-    group = parser.add_argument_group("canvas")
-    group.add_argument(
-        "--canvas-scale",
-        type=float,
-        default=1.0,
-        help="resolution of the mosaic relative to the source images",
-    )
-
-    group = parser.add_argument_group("output")
-    group.add_argument("--output-root", default="outputs", help="root folder of the runs")
-    group.add_argument("--run-name", default=None, help="name of the run folder")
-    group.add_argument(
-        "--no-preview", action="store_true", help="do not write the downscaled canvas"
-    )
-    group.add_argument(
-        "--preview-scale", type=float, default=0.1, help="scale of the downscaled canvas"
-    )
-    group.add_argument("--jpeg-quality", type=int, default=90, help="quality of the JPEGs")
-    group.add_argument("--no-timings", action="store_true", help="do not write the timings CSV")
-    group.add_argument(
-        "--save-debug", action="store_true", help="write match visualisations"
-    )
-
-    return parser
-
-
 def config_from_args(args: argparse.Namespace) -> MosaicConfig:
     """Build the pipeline configuration from the parsed arguments."""
+    if args.canvas_scale <= 0:
+        raise ValueError("--canvas-scale must be > 0")
     detector = DetectorConfig()
     matcher = MatcherConfig()
     registration = RegistrationConfig(
@@ -153,7 +59,7 @@ def config_from_args(args: argparse.Namespace) -> MosaicConfig:
         max_features=args.store_max_features,
     )
     blending = BlendingConfig(method=args.blend, ramp=args.blend_ramp)
-    canvas = CanvasConfig(scale=args.canvas_scale)
+    canvas = CanvasConfig(scale=args.canvas_scale, max_pixels=args.max_canvas_pixels)
     output = OutputConfig(
         root=args.output_root,
         run_name=args.run_name,
@@ -181,11 +87,10 @@ def config_from_args(args: argparse.Namespace) -> MosaicConfig:
 
 def _run_pipeline(args: argparse.Namespace) -> int:
     """Run the per-frame pipeline."""
-    config = config_from_args(args)
     run_name = args.run_name or f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
     start = time.perf_counter()
     try:
+        config = config_from_args(args)
         pipeline = StitchingPipeline(config, run_name=run_name)
     except (FileNotFoundError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
@@ -199,6 +104,12 @@ def _run_pipeline(args: argparse.Namespace) -> int:
 
 def _run_merge(args: argparse.Namespace) -> int:
     """Run the chunk merge."""
+    if args.detect_px <= 0:
+        print("error: --detect-px must be > 0", file=sys.stderr)
+        return 2
+    if args.features < 4:
+        print("error: --features must be >= 4", file=sys.stderr)
+        return 2
     merger = MosaicMerger(
         inputs=args.inputs,
         out_dir=args.out,
@@ -210,7 +121,11 @@ def _run_merge(args: argparse.Namespace) -> int:
         quality=args.quality,
     )
     start = time.perf_counter()
-    result = merger.run()
+    try:
+        result = merger.run()
+    except RuntimeError as error:
+        print(f"merge failed: {error}", file=sys.stderr)
+        return 1
     elapsed = time.perf_counter() - start
     if result is None:
         print("merge failed", file=sys.stderr)
@@ -230,7 +145,11 @@ def _run_chunks(args: argparse.Namespace) -> int:
         extra_args=args.extra or [],
     )
     start = time.perf_counter()
-    runner.run()
+    try:
+        runner.run()
+    except (RuntimeError, FileNotFoundError, ValueError) as error:
+        print(f"chunked run failed: {error}", file=sys.stderr)
+        return 1
     elapsed = time.perf_counter() - start
     print(f" wall clock: {elapsed:.3f} s")
     return 0
@@ -352,6 +271,12 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=1.0,
         help="resolution of the mosaic relative to the source images",
+    )
+    group.add_argument(
+        "--max-canvas-pixels",
+        type=int,
+        default=0,
+        help="abort if the canvas grows beyond this many pixels (0 = no limit)",
     )
 
     group = parser.add_argument_group("output")

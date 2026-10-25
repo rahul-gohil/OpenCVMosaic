@@ -31,7 +31,7 @@ from .dataset import ImageSequence
 from .features import FeatureExtractor, FeatureSet
 from .matching import DescriptorMatcher
 from .output import RunOutput
-from .registration import estimate_homography
+from .registration import Registration, estimate_homography
 from .store import MosaicFeatureStore
 from .transforms import TransformChain, bounding_box, transformed_corners
 
@@ -110,6 +110,7 @@ class _RegistrationOutcome:
     """Everything produced by registering a single frame."""
 
     registration: Any
+    chosen: Any
     matches: list
     source: str
     match_time: float
@@ -189,6 +190,10 @@ class StitchingPipeline:
             if registration is None or candidate.inliers > registration.inliers:
                 registration = candidate
                 matches = candidate_matches
+        if registration is None:
+            registration = Registration(
+                ok=False, H=None, reason="fewer than 4 tentative matches"
+            )
         return registration, match_time, homography_time, matches
 
     def _shift(
@@ -229,7 +234,7 @@ class StitchingPipeline:
         if reference_image is None:
             return
         flags = registration.inlier_flags
-        if flags is None:
+        if flags is None or len(flags) != len(matches):
             flags = np.ones(len(matches), bool)
         panel = cv2.drawMatches(
             reference_image,
@@ -266,15 +271,15 @@ class StitchingPipeline:
         self.canvas.initialize(image)
         self.chain.seed(0)
         if self.config.registration.mode == "mosaic":
-            self.store.update(features, self.chain.get(0))
+            self.store.update(features, self.chain.get(0), frame_id=0)
 
         self.log(f"[ 1/{len(self.sequence)}] {self.sequence.name(0)}")
         self.log(
             f"   a) SIFT on {self.sequence.name(0)} took {sift_time:.3f} s "
             f" ({len(features)} keypoints)"
         )
-        self.log(f"   b) matching took 0.000 s (reference frame)")
-        self.log(f"   c) homography took 0.000 s (reference frame)")
+        self.log("   b) matching took 0.000 s (reference frame)")
+        self.log("   c) homography took 0.000 s (reference frame)")
         self.log(
             f"   d) stitching took 0.000 s "
             f"(canvas {self.canvas.size[0]}x{self.canvas.size[1]})"
@@ -316,6 +321,7 @@ class StitchingPipeline:
         match_time = 0.0
         homography_time = 0.0
         registration = None
+        chosen = None
         matches = []
         local = []
         grounding = []
@@ -420,6 +426,7 @@ class StitchingPipeline:
                                 <= config.registration.grounding_max_residual
                             ):
                                 mosaic_attempt = grounding_attempt.H
+                                chosen = grounding_attempt
                                 source = "grounded"
                                 matches = grounding
                                 break
@@ -431,6 +438,7 @@ class StitchingPipeline:
 
                     if mosaic_attempt is None and local_attempt.ok:
                         mosaic_attempt = local_attempt.H
+                        chosen = local_attempt
                         source = "mosaic"
                         matches = local
                         break
@@ -445,9 +453,12 @@ class StitchingPipeline:
             G = self.chain.set(index, reference_transform @ registration.H)
 
         rejected = (not registration.ok) and (mosaic_attempt is None)
+        if chosen is None:
+            chosen = registration
 
         return _RegistrationOutcome(
             registration=registration,
+            chosen=chosen,
             matches=matches,
             source=source,
             match_time=match_time,
@@ -490,7 +501,7 @@ class StitchingPipeline:
             f"   c) homography took {homography_time:.3f} s "
             f"-> REJECTED ({outcome.registration.reason})"
         )
-        self.log(f"   d) stitching took 0.000 s (frame skipped)")
+        self.log("   d) stitching took 0.000 s (frame skipped)")
 
         step_total = time.perf_counter() - step_start
         return StepResult(
@@ -504,11 +515,11 @@ class StitchingPipeline:
             total_time=step_total,
             keypoints=len(features),
             matches=len(outcome.matches),
-            inliers=outcome.registration.inliers,
-            inlier_ratio=outcome.registration.inlier_ratio,
-            reprojection_error=outcome.registration.reprojection_error,
+            inliers=outcome.chosen.inliers,
+            inlier_ratio=outcome.chosen.inlier_ratio,
+            reprojection_error=outcome.chosen.reprojection_error,
             accepted=False,
-            reason=outcome.registration.reason,
+            reason=outcome.chosen.reason,
             source=outcome.source,
             canvas_width=self.canvas.size[0],
             canvas_height=self.canvas.size[1],
@@ -547,9 +558,9 @@ class StitchingPipeline:
         )
         self.log(
             f"   c) homography took {homography_time:.3f} s "
-            f"({outcome.source}, {outcome.registration.inliers}/{outcome.registration.matches} inliers, "
-            f"ratio {outcome.registration.inlier_ratio:.2f}, "
-            f"residual {outcome.registration.reprojection_error:.2f} px)"
+            f"({outcome.source}, {outcome.chosen.inliers}/{outcome.chosen.matches} inliers, "
+            f"ratio {outcome.chosen.inlier_ratio:.2f}, "
+            f"residual {outcome.chosen.reprojection_error:.2f} px)"
         )
         self.log(
             f"   d) stitching took {stitch_time:.3f} s "
@@ -577,12 +588,12 @@ class StitchingPipeline:
             save_time=save_time,
             total_time=step_total + save_time,
             keypoints=len(features),
-            matches=outcome.registration.matches,
-            inliers=outcome.registration.inliers,
-            inlier_ratio=outcome.registration.inlier_ratio,
-            reprojection_error=outcome.registration.reprojection_error,
+            matches=outcome.chosen.matches,
+            inliers=outcome.chosen.inliers,
+            inlier_ratio=outcome.chosen.inlier_ratio,
+            reprojection_error=outcome.chosen.reprojection_error,
             accepted=True,
-            reason=outcome.registration.reason,
+            reason=outcome.chosen.reason,
             source=outcome.source,
             canvas_width=self.canvas.size[0],
             canvas_height=self.canvas.size[1],
@@ -596,7 +607,7 @@ class StitchingPipeline:
             outcome.reference_features,
             features,
             outcome.matches,
-            outcome.registration,
+            outcome.chosen,
         )
 
         # Track placed frames for fallback references.
@@ -616,8 +627,8 @@ class StitchingPipeline:
     ) -> None:
         """Update parent tracking, feature store, and placed list."""
         config = self.config
-        if config.registration.mode == "mosaic":
-            self.store.update(features, outcome.G)
+        if config.registration.mode == "mosaic" and outcome.G is not None:
+            self.store.update(features, outcome.G, frame_id=index)
 
     def _finalize(self, report: RunReport) -> RunReport:
         """Write the final mosaic, compute totals, log the summary."""
@@ -632,7 +643,8 @@ class StitchingPipeline:
         self.log("=" * 72)
         self.log(" run summary")
         self.log(f"   frames processed : {len(report.steps)}")
-        self.log(f"   accepted         : {report.accepted}")
+        self.log("   seed frame       : 1 (always placed)")
+        self.log(f"   accepted         : {report.accepted} (excluding the seed frame)")
         self.log(f"   rejected         : {report.rejected}")
         self.log(f"   total time       : {report.total_time:.3f} s")
         self.log(f"   mean per step    : {report.mean_step_time:.3f} s")
@@ -660,7 +672,6 @@ class StitchingPipeline:
     # -------------------------------------------------------------------- run
     def run(self) -> RunReport:
         """Run the whole pipeline and return the report of the run."""
-        config = self.config
         report = RunReport(output_dir=str(self.output.directory))
 
         self._log_header(report)

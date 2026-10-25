@@ -29,6 +29,22 @@ def natural_key(path: Path) -> Tuple:
     return tuple(key)
 
 
+def find_images(directory: str, pattern: str) -> List[Path]:
+    """Return the images of ``directory`` matching ``pattern``.
+
+    Matching is case-insensitive: a ``*.JPG`` pattern also finds ``*.jpg``
+    files (and vice versa), which matters on case-sensitive filesystems.
+    """
+    base = Path(directory)
+    if not base.is_dir():
+        raise FileNotFoundError(f"dataset directory not found: {base}")
+    variants = {pattern, pattern.lower(), pattern.upper()}
+    found = set()
+    for variant in variants:
+        found.update(base.glob(variant))
+    return sorted(found, key=natural_key)
+
+
 class ImageSequence:
     """An ordered, immutable view over a directory of images.
 
@@ -50,10 +66,7 @@ class ImageSequence:
         end: Optional[int] = None,
     ) -> None:
         self.directory = Path(directory)
-        if not self.directory.is_dir():
-            raise FileNotFoundError(f"dataset directory not found: {self.directory}")
-
-        found = sorted(self.directory.glob(pattern), key=natural_key)
+        found = find_images(directory, pattern)
         if not found:
             raise FileNotFoundError(
                 f"no image matching '{pattern}' found in {self.directory}"

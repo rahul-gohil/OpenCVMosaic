@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from pathlib import Path
 from typing import Callable, List, Optional
 
 
@@ -48,8 +47,10 @@ class ChunkRunner:
         python: str = sys.executable,
         log: Callable[[str], None] = print,
     ) -> None:
+        if int(chunk_size) < 1:
+            raise ValueError("chunk_size must be >= 1")
         self.dataset = dataset
-        self.chunk_size = chunk_size
+        self.chunk_size = int(chunk_size)
         self.output_root = output_root
         if prefix is None:
             self.prefix = os.path.basename(os.path.normpath(dataset))
@@ -62,8 +63,8 @@ class ChunkRunner:
 
     def _count_frames(self) -> int:
         """Count the number of frames matching the pattern."""
-        from pathlib import Path
-        return len(list(Path(self.dataset).glob(self.pattern)))
+        from .dataset import find_images
+        return len(find_images(self.dataset, self.pattern))
 
     def run(self) -> List[str]:
         """Run all chunks and return the list of output folder names."""
@@ -80,8 +81,11 @@ class ChunkRunner:
             name = f"{self.prefix}_{start + 1:03d}_{end + 1:03d}"
             self.log(f"=== chunk {n} : frames {start + 1}-{end + 1}  -> {self.output_root}/{name}")
 
+            main_py = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"
+            )
             cmd = [
-                self.python, "-u", "main.py",
+                self.python, "-u", main_py,
                 "--dataset", self.dataset,
                 "--pattern", self.pattern,
                 "--start", str(start),
@@ -98,9 +102,10 @@ class ChunkRunner:
                                            "mean per step", "wall clock")):
                     self.log(line)
             if proc.returncode != 0:
+                detail = proc.stderr[-500:] if proc.stderr else "no stderr"
                 self.log(f"ERROR in chunk {n}:")
-                self.log(proc.stderr[-500:] if proc.stderr else "no stderr")
-                break
+                self.log(detail)
+                raise RuntimeError(f"chunk {name} failed (exit {proc.returncode}): {detail}")
 
             chunk_names.append(name)
 
