@@ -967,6 +967,21 @@ echo "Pipeline ready" > /tmp/pipeline_ready
             "elapsed_time": __import__("time").time() - task.start_time,
         }
 
+    async def instance_is_running(self, instance_id: str) -> bool:
+        """Return True only if EC2 currently reports the instance as running."""
+        if not instance_id:
+            return False
+
+        def _check():
+            try:
+                r = self.instance_manager.ec2_client.describe_instances(InstanceIds=[instance_id])
+                return r["Reservations"][0]["Instances"][0]["State"]["Name"] == "running"
+            except Exception:
+                return False
+
+        import asyncio as _asyncio
+        return await _asyncio.to_thread(_check)
+
     async def cleanup(self):
         await self.instance_manager.cleanup_orphaned_instances() if hasattr(
             self.instance_manager, "cleanup_orphaned_instances"
@@ -1205,9 +1220,22 @@ async def create_app():
             os.makedirs(os.path.dirname(cache), exist_ok=True)
             tmp = cache + "." + next(tempfile._get_candidate_names()) + ".part"
 
+            # Fail fast when the instance has already been terminated instead of
+            # waiting for an SCP connect timeout.
+            instance_id = getattr(task, "instance_id", None)
+            if not await orchestrator.instance_is_running(instance_id):
+                resp = web.json_response(
+                    {"error": "The instance is no longer running, so the full mosaic was not cached. "
+                              "Download it before terminating the instance."},
+                    status=410)
+                resp.headers['Access-Control-Allow-Origin'] = '*'
+                return resp
+
             def _fetch():
                 return subprocess.run(
                     ["scp", "-o", "StrictHostKeyChecking=no", "-o", "Compression=no",
+                     "-o", "ConnectTimeout=8", "-o", "ConnectionAttempts=1",
+                     "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2",
                      "-i", key_path, f"{ssh_user}@{ip}:{remote}", tmp],
                     capture_output=True, text=True, timeout=900,
                 )
