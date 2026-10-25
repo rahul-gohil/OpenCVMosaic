@@ -92,7 +92,12 @@ def _run_pipeline_sync(chunk_size, work_dir):
              "--output-root", os.path.join(work_dir, "chunks"),
              "--prefix", "chunk"],
             cwd=PIPELINE_DIR, capture_output=True, text=True,
-            env={**os.environ, "PYTHONPATH": os.environ.get("PYTHONPATH", ""), "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", "")},
+            _env = dict(os.environ)
+            if not _env.get("PYTHONPATH"):
+                _env.pop("PYTHONPATH", None)
+            if not _env.get("LD_LIBRARY_PATH"):
+                _env.pop("LD_LIBRARY_PATH", None)
+            env={**_env},
         )
         if proc.returncode != 0:
             logger.error(f"Stitch failed: {proc.stderr[-500:]}")
@@ -109,7 +114,12 @@ def _run_pipeline_sync(chunk_size, work_dir):
              "--inputs", chunk_pattern,
              "--out", os.path.join(work_dir, "merged")],
             cwd=PIPELINE_DIR, capture_output=True, text=True,
-            env={**os.environ, "PYTHONPATH": os.environ.get("PYTHONPATH", ""), "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH", "")},
+            _env = dict(os.environ)
+            if not _env.get("PYTHONPATH"):
+                _env.pop("PYTHONPATH", None)
+            if not _env.get("LD_LIBRARY_PATH"):
+                _env.pop("LD_LIBRARY_PATH", None)
+            env={**_env},
         )
         if proc.returncode != 0:
             logger.error(f"Merge failed: {proc.stderr[-500:]}")

@@ -109,6 +109,7 @@ class PipelineOrchestrator:
         self.default_region = self.region
         self._last_pipeline_images = {}
         self._cool_pipeline_images = {}
+        self._diy_pipeline_images = {}
         self._last_pipeline_stage = ""
         self._last_pipeline_pct = 0
 
@@ -504,6 +505,106 @@ WantedBy=multi-user.target
             await asyncio.sleep(5)
         raise Exception("MCP server not ready in DIY mode after reconfigure")
 
+    async def _reconfigure_to_cool(self, ip: str):
+        """Reconfigure from DIY back to COOL using COOL venv Python.
+
+        Isolation: removes the pip-wheel ldconfig entry so pip's bundled
+        libraries cannot shadow COOL's libs, and runs COOL's venv Python
+        with COOL's PYTHONPATH + LD_LIBRARY_PATH.
+        """
+        import subprocess, tempfile, os as _os
+        key_path = os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem"))
+        ssh_user = "ubuntu"
+
+        service_content = """[Unit]
+Description=Pipeline MCP Server (COOL)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Environment=PIPELINE_DIR=/opt/OpenCVMosaic
+Environment=LD_LIBRARY_PATH=/opt/cool/cpp_sdk/lib:/opt/ffmpeg/lib
+Environment=PYTHONPATH=/opt/cool/python_3.12/site-packages/
+ExecStart=/opt/run-mcp-cool.sh
+Restart=always
+RestartSec=5
+StandardOutput=append:/tmp/pipeline-mcp.log
+StandardError=append:/tmp/pipeline-mcp.log
+
+[Install]
+WantedBy=multi-user.target
+"""
+        wrapper_content = """#!/bin/bash
+export LD_LIBRARY_PATH=/opt/cool/cpp_sdk/lib:/opt/ffmpeg/lib:$LD_LIBRARY_PATH
+export PYTHONPATH=/opt/cool/python_3.12/site-packages/:$PYTHONPATH
+exec /opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py
+"""
+
+        svc_tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".service", delete=False)
+        svc_tmp.write(service_content); svc_tmp.close()
+        wrap_tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False)
+        wrap_tmp.write(wrapper_content); wrap_tmp.close()
+
+        try:
+            for local, remote in ((wrap_tmp.name, f"{ssh_user}@{ip}:/tmp/run-mcp-cool.sh"),
+                                  (svc_tmp.name, f"{ssh_user}@{ip}:/tmp/pipeline-mcp-cool.service")):
+                p = subprocess.run(["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path, local, remote],
+                                   capture_output=True, text=True, timeout=30)
+                if p.returncode != 0:
+                    raise Exception(f"Failed to SCP {local}: {p.stderr}")
+
+            commands = [
+                'echo "Step 1: Stopping DIY MCP server..."',
+                "sudo systemctl stop pipeline-mcp 2>/dev/null || true",
+                "sleep 2",
+                'echo "Step 2: Removing pip-wheel ldconfig entry (isolation)..."',
+                "sudo rm -f /etc/ld.so.conf.d/pip-wheel-bundled.conf",
+                "sudo ldconfig",
+                'echo "Step 3: Installing COOL wrapper + service..."',
+                "sudo mv /tmp/run-mcp-cool.sh /opt/run-mcp-cool.sh",
+                "sudo chmod +x /opt/run-mcp-cool.sh",
+                "sudo mv /tmp/pipeline-mcp-cool.service /etc/systemd/system/pipeline-mcp.service",
+                "sudo systemctl daemon-reload",
+                'echo "Step 4: Starting COOL MCP server..."',
+                "sudo systemctl restart pipeline-mcp 2>/dev/null || true",
+                "sleep 5",
+                'echo "Step 5: Verifying COOL MCP server..."',
+                'for i in $(seq 1 30); do STATUS=$(systemctl is-active pipeline-mcp 2>/dev/null || true); if [ "$STATUS" = "active" ]; then echo "MCP service active"; break; fi; sleep 1; done',
+                'echo "COOL reconfiguration complete"',
+            ]
+            result = subprocess.run(
+                ["ssh", "-o", "StrictHostKeyChecking=no", "-i", key_path, f"{ssh_user}@{ip}",
+                 " && ".join(commands)],
+                capture_output=True, text=True, timeout=180,
+            )
+            if result.returncode != 0:
+                logger.error(f"Reconfigure to COOL stdout: {result.stdout}")
+                logger.error(f"Reconfigure to COOL stderr: {result.stderr}")
+                raise Exception(f"COOL reconfiguration failed: {result.stderr[:500]}")
+        finally:
+            for p in (svc_tmp.name, wrap_tmp.name):
+                try:
+                    _os.unlink(p)
+                except Exception:
+                    pass
+
+        # Wait for MCP server to report COOL mode
+        import asyncio
+        for _ in range(30):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(f"http://{ip}:8080/health", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get("is_cool", False):
+                                logger.info(f"MCP server ready in COOL mode (OpenCV {data.get('opencv_version')}) on {ip}")
+                                return
+            except Exception:
+                pass
+            await asyncio.sleep(5)
+        raise Exception("MCP server not ready in COOL mode after reconfigure")
+
     async def _download_results_locally(self, task, ip: str):
         """Download pipeline results from instance to local machine before termination."""
         import subprocess, os as _os, tempfile
@@ -639,68 +740,6 @@ WantedBy=multi-user.target
                     logger.warning(f"Could not download DIY preview: {e}")
 
             logger.info(f"Downloaded {len(task.diy_local_images['chunks'])} DIY chunks + merged")
-
-        # Download COOL images (if available from compare mode)
-        cool_images = getattr(self, "_cool_pipeline_images", {})
-        if cool_images:
-            cool_local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task.task_id}-cool")
-            os.makedirs(cool_local_dir, exist_ok=True)
-            task.cool_local_images = {"chunks": [], "merged": None, "merged_preview": None}
-
-            for chunk in cool_images.get("chunks", []):
-                remote_path = chunk["path"]
-                local_name = f"{chunk['name']}.jpg"
-                local_path = os.path.join(cool_local_dir, local_name)
-                try:
-                    proc = subprocess.run(
-                        ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                         f"{ssh_user}@{ip}:{remote_path}", local_path],
-                        capture_output=True, text=True, timeout=60
-                    )
-                    if proc.returncode == 0 and _os.path.exists(local_path):
-                        task.cool_local_images["chunks"].append({
-                            "name": chunk["name"],
-                            "path": local_path,
-                            "size_bytes": _os.path.getsize(local_path),
-                        })
-                except Exception as e:
-                    logger.warning(f"Could not download COOL {remote_path}: {e}")
-
-            if cool_images.get("merged"):
-                remote_path = cool_images["merged"]["path"]
-                local_path = os.path.join(cool_local_dir, "mosaic_merged.jpg")
-                try:
-                    proc = subprocess.run(
-                        ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                         f"{ssh_user}@{ip}:{remote_path}", local_path],
-                        capture_output=True, text=True, timeout=120
-                    )
-                    if proc.returncode == 0 and _os.path.exists(local_path):
-                        task.cool_local_images["merged"] = {
-                            "path": local_path,
-                            "size_bytes": _os.path.getsize(local_path),
-                        }
-                except Exception as e:
-                    logger.warning(f"Could not download COOL merged: {e}")
-
-            if cool_images.get("merged_preview"):
-                remote_path = cool_images["merged_preview"]["path"]
-                local_path = os.path.join(cool_local_dir, "mosaic_merged_preview.jpg")
-                try:
-                    proc = subprocess.run(
-                        ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
-                         f"{ssh_user}@{ip}:{remote_path}", local_path],
-                        capture_output=True, text=True, timeout=60
-                    )
-                    if proc.returncode == 0 and _os.path.exists(local_path):
-                        task.cool_local_images["merged_preview"] = {
-                            "path": local_path,
-                            "size_bytes": _os.path.getsize(local_path),
-                        }
-                except Exception as e:
-                    logger.warning(f"Could not download COOL preview: {e}")
-
-            logger.info(f"Downloaded {len(task.cool_local_images['chunks'])} COOL chunks + merged")
 
     def _compare(self, cool: dict, diy: dict) -> dict:
         cool_time = cool.get("total_time_s", 0)
@@ -897,9 +936,6 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
             # COOL run or completed: _last_pipeline_images has COOL images
             cool_image_urls = _build_local_urls(local_images, "local-image") if local_images else _build_remote_urls(pipeline_images)
             diy_image_urls = _build_local_urls(diy_local_images, "diy-image") if diy_local_images else _build_remote_urls(diy_pipeline_images)
-
-        # pipeline_images = COOL images (for backward compat with frontend)
-        image_urls = cool_image_urls
 
         # pipeline_images = COOL images (for backward compat with frontend)
         image_urls = cool_image_urls
