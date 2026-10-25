@@ -89,8 +89,12 @@ These keys should live in your `.env` (git-ignored):
 `MARKETPLACE_AMI_ID`. Do not put AWS secret keys there — use a profile.
 
 Edit `config-marketplace.json` with the AMI ID from your Marketplace
-subscription page (region `us-east-1`). The orchestrator also accepts the AMI
-from the UI / `MARKETPLACE_AMI_ID`.
+subscription page (region `us-east-1`).
+
+The AMI can be supplied in three places, highest priority first: the **AMI ID
+field in the UI**, `MARKETPLACE_AMI_ID` in `.env`, then `config-marketplace.json`.
+No AMI is baked into this repository; if none is provided the orchestrator
+refuses to launch.
 
 AWS credentials are resolved by boto3 in the usual way:
 

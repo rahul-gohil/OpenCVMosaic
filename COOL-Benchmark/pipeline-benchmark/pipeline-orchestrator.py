@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -63,6 +64,13 @@ logging.basicConfig(
 logger = logging.getLogger("pipeline-orchestrator")
 
 
+def _valid_ami_id(value: str) -> bool:
+    """True for a syntactically valid EC2 AMI id (no AMI is baked into the repo)."""
+    if not value:
+        return False
+    return bool(re.fullmatch(r"ami-[0-9a-f]{8,17}", value.strip()))
+
+
 def _safe_local_file(local_dir: str, name: str):
     """Resolve a served filename without allowing traversal outside local_dir."""
     if not name or os.path.basename(name) != name or ".." in name or "/" in name or "\\" in name:
@@ -97,6 +105,7 @@ class PipelineBenchmarkTask:
     start_time: float
     opencv_version: str = "5"
     mode: str = "diy"
+    ami_id: Optional[str] = None
     current_run: str = "cool"  # "cool", "diy", or "completed"
     instance_id: Optional[str] = None
     instance_ip: Optional[str] = None
@@ -159,6 +168,7 @@ class PipelineOrchestrator:
         self, instance_type: str, max_instances: int, chunk_size: int,
         opencv_version: str = "5",
         mode: str = "diy",
+        ami_id: str = None,
     ) -> str:
         # Validate inputs. The endpoints are reachable from the network, so the
         # orchestrator must not be a cost/abuse amplifier.
@@ -168,6 +178,10 @@ class PipelineOrchestrator:
             raise ValueError(f"Unsupported instance type: {instance_type}")
         if not isinstance(chunk_size, int) or not (1 <= chunk_size <= 200):
             raise ValueError("chunk_size must be an integer between 1 and 200")
+        if ami_id:
+            ami_id = str(ami_id).strip()
+            if not _valid_ami_id(ami_id):
+                raise ValueError("amiId must look like ami-xxxxxxxxxxxxxxxxx")
 
         # Image state is held per orchestrator (not per task), so concurrent
         # benchmarks would corrupt each other's galleries. Allow only one.
@@ -186,6 +200,7 @@ class PipelineOrchestrator:
         )
         task.opencv_version = opencv_version
         task.mode = mode
+        task.ami_id = ami_id
         task.build_progress = {"current_step": "Initializing", "progress_percent": 0}
         self.tasks[task_id] = task
         asyncio.create_task(self._execute_benchmark(task_id))
@@ -202,14 +217,17 @@ class PipelineOrchestrator:
             task.status = TaskStatus.STAGING
             task.build_progress = {"current_step": "Launching instance", "progress_percent": 10}
 
-            # Determine AMI and user data based on mode
+            # Determine AMI and user data based on mode. A per-task AMI from the
+            # UI wins over the deployment-level configuration; nothing is baked
+            # into the repository.
             mode = getattr(task, "mode", "diy")
+            configured_ami = getattr(task, "ami_id", None) or self.marketplace_ami_id
             if mode == "diy":
                 # DIY-only now uses the COOL AMI + pip OpenCV, so the only
                 # difference vs Compare mode is the OpenCV build. Running DIY
                 # on a different OS (AL2023) made single-mode and compare-mode
                 # numbers incomparable (OS accounted for ~9s of the gap).
-                ami_id = self.marketplace_ami_id
+                ami_id = configured_ami
                 if not ami_id or ami_id.startswith("ami-to-be"):
                     raise ValueError("COOL AMI not configured. Set MARKETPLACE_AMI_ID or config-marketplace.json")
                 user_data = self._get_user_data()
@@ -217,7 +235,7 @@ class PipelineOrchestrator:
                 logger.info(f"DIY mode: using COOL AMI {ami_id} (will reconfigure to pip OpenCV)")
             elif mode == "cool":
                 # COOL-only: use COOL marketplace AMI
-                ami_id = self.marketplace_ami_id
+                ami_id = configured_ami
                 if not ami_id or ami_id.startswith("ami-to-be"):
                     raise ValueError("Marketplace AMI not configured. Set MARKETPLACE_AMI_ID or config-marketplace.json")
                 user_data = self._get_user_data()
@@ -225,7 +243,7 @@ class PipelineOrchestrator:
                 logger.info(f"COOL mode: using marketplace AMI {ami_id}")
             else:
                 # Compare mode: use COOL marketplace AMI (runs both)
-                ami_id = self.marketplace_ami_id
+                ami_id = configured_ami
                 if not ami_id or ami_id.startswith("ami-to-be"):
                     raise ValueError("Marketplace AMI not configured. Set MARKETPLACE_AMI_ID or config-marketplace.json")
                 user_data = self._get_user_data()
@@ -1039,6 +1057,7 @@ async def create_app():
                 chunk_size=int(data.get("chunkSize", 18)),
                 opencv_version="5",
                 mode=data.get("mode", "diy"),
+                ami_id=data.get("amiId"),
             )
         except ValueError as e:
             resp = web.json_response({"error": str(e)}, status=400)
