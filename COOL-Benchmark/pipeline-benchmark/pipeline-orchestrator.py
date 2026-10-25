@@ -93,6 +93,8 @@ class PipelineBenchmarkTask:
     diy_local_images: Optional[Dict[str, str]] = None
     download_complete: bool = False
     diy_download_complete: bool = False
+    cool_merged: Optional[Dict[str, Any]] = None
+    diy_merged: Optional[Dict[str, Any]] = None
     build_progress: Optional[Dict[str, Any]] = None
     end_time: Optional[float] = None
     results: Optional[Dict[str, Any]] = None
@@ -645,31 +647,41 @@ exec /opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py
             primary_res = f_primary.result()
             diy_res = f_diy.result() if f_diy else None
 
+        mode = getattr(task, "mode", "diy")
         if primary_res is not None:
             task.local_images = primary_res
             task.download_complete = True
-            logger.info(f"Downloaded {len(primary_res['chunks'])} chunks + merged to {primary_dir}")
+            if primary_res.get("merged"):
+                if mode == "diy":
+                    task.diy_merged = primary_res["merged"]
+                else:
+                    task.cool_merged = primary_res["merged"]
+            logger.info(f"Downloaded {len(primary_res['chunks'])} chunk previews + merged preview to {primary_dir}")
 
         if diy_res is not None:
             task.diy_local_images = diy_res
             task.diy_download_complete = True
-            logger.info(f"Downloaded {len(diy_res['chunks'])} DIY chunks + merged to {diy_dir}")
+            if diy_res.get("merged"):
+                task.diy_merged = diy_res["merged"]
+            logger.info(f"Downloaded {len(diy_res['chunks'])} DIY chunk previews + merged preview to {diy_dir}")
 
         progress("Download complete", 99)
 
     def _fetch_image_set(self, key_path, ssh_user, ip, images, local_dir):
-        """Fetch one run's outputs.
+        """Fetch one run's artifacts.
 
-        Uses a single ``tar`` stream over one SSH connection (one handshake,
-        full link bandwidth) instead of one SCP per file. Falls back to
-        sequential SCP if the stream fails. Returns a dict with flattened
-        local paths (``<local_dir>/<chunk>.jpg``, ``mosaic_merged.jpg`` ...).
+        Default policy (fast): download the full merged mosaic preview and small
+        per-chunk previews only. Full-resolution chunk JPEGs stay on the
+        instance, and the full merged mosaic is fetched on demand by the
+        ``/full-mosaic`` endpoint. Set ``DOWNLOAD_FULL_CHUNKS=1`` to restore the
+        old behaviour (download every full-size chunk).
         """
         import os as _os, shutil, subprocess, shlex
 
         chunks = images.get("chunks", []) or []
         merged = images.get("merged")
         preview = images.get("merged_preview")
+        full_chunks = os.environ.get("DOWNLOAD_FULL_CHUNKS", "0").lower() in ("1", "true", "yes")
 
         _os.makedirs(local_dir, exist_ok=True)
 
@@ -681,59 +693,68 @@ exec /opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py
         elif merged:
             workdir = _os.path.dirname(_os.path.dirname(merged["path"]))
 
-        remote_files = []
-        if workdir:
-            remote_files = [f"chunks/{c['name']}/mosaic_final.jpg" for c in chunks]
-            if merged:
-                remote_files.append("merged/mosaic_merged.jpg")
-            if preview:
-                remote_files.append("merged/mosaic_merged_preview.jpg")
+        # remote path -> local flat name
+        remote_to_local = {}
+        for chunk in chunks:
+            use_preview = (not full_chunks) and chunk.get("preview_path")
+            remote = chunk["preview_path"] if use_preview else chunk["path"]
+            remote_to_local[remote] = chunk["name"] + ".jpg"
+        if preview:
+            remote_to_local[preview["path"]] = "mosaic_merged_preview.jpg"
 
         staging = _os.path.join(local_dir, "_incoming")
         shutil.rmtree(staging, ignore_errors=True)
         _os.makedirs(staging, exist_ok=True)
 
         fetched = False
-        if workdir and remote_files:
-            remote_cmd = "cd {} && tar -cf - {}".format(
-                shlex.quote(workdir),
-                " ".join(shlex.quote(p) for p in remote_files),
-            )
-            fetched = self._ssh_tar_stream(key_path, ssh_user, ip, remote_cmd, staging, timeout=900)
+        if workdir and remote_to_local:
+            rel_paths = []
+            for remote in remote_to_local:
+                try:
+                    rel_paths.append(_os.path.relpath(remote, workdir))
+                except ValueError:
+                    pass
+            if rel_paths:
+                remote_cmd = "cd {} && tar -cf - {}".format(
+                    shlex.quote(workdir),
+                    " ".join(shlex.quote(p) for p in rel_paths),
+                )
+                fetched = self._ssh_tar_stream(key_path, ssh_user, ip, remote_cmd, staging, timeout=600)
 
         if not fetched:
             logger.warning(f"tar stream failed for {workdir}; falling back to sequential scp")
-            self._scp_sequential(key_path, ssh_user, ip, images, local_dir)
+            self._scp_sequential(key_path, ssh_user, ip, images, local_dir, remote_to_local)
 
-        # Flatten the streamed tree into the flat layout served by /local-image
-        for chunk in chunks:
-            src = _os.path.join(staging, "chunks", chunk["name"], "mosaic_final.jpg")
-            dst = _os.path.join(local_dir, chunk["name"] + ".jpg")
-            if _os.path.exists(src):
-                shutil.move(src, dst)
-        if merged:
-            src = _os.path.join(staging, "merged", "mosaic_merged.jpg")
-            dst = _os.path.join(local_dir, "mosaic_merged.jpg")
-            if _os.path.exists(src):
-                shutil.move(src, dst)
-        if preview:
-            src = _os.path.join(staging, "merged", "mosaic_merged_preview.jpg")
-            dst = _os.path.join(local_dir, "mosaic_merged_preview.jpg")
-            if _os.path.exists(src):
+        # Flatten streamed files into the flat layout served by /local-image
+        for remote, flat_name in remote_to_local.items():
+            src = _os.path.join(staging, _os.path.relpath(remote, workdir)) if workdir else None
+            dst = _os.path.join(local_dir, flat_name)
+            if src and _os.path.exists(src):
                 shutil.move(src, dst)
         shutil.rmtree(staging, ignore_errors=True)
 
         out = {"chunks": [], "merged": None, "merged_preview": None}
         for chunk in chunks:
-            p = _os.path.join(local_dir, chunk["name"] + ".jpg")
-            if _os.path.exists(p):
-                out["chunks"].append({"name": chunk["name"], "path": p, "size_bytes": _os.path.getsize(p)})
-        mp = _os.path.join(local_dir, "mosaic_merged.jpg")
-        if _os.path.exists(mp):
-            out["merged"] = {"path": mp, "size_bytes": _os.path.getsize(mp)}
+            flat = _os.path.join(local_dir, chunk["name"] + ".jpg")
+            if _os.path.exists(flat):
+                out["chunks"].append({
+                    "name": chunk["name"],
+                    "path": flat,
+                    "size_bytes": _os.path.getsize(flat),
+                    "is_preview": not full_chunks,
+                })
         pp = _os.path.join(local_dir, "mosaic_merged_preview.jpg")
         if _os.path.exists(pp):
             out["merged_preview"] = {"path": pp, "size_bytes": _os.path.getsize(pp)}
+        if merged:
+            # Full mosaic intentionally not downloaded; record where to fetch it.
+            out["merged"] = {
+                "remote_path": merged["path"],
+                "size_bytes": merged.get("size_bytes", 0),
+                "cache_path": _os.path.join(local_dir, "mosaic_merged_full.jpg"),
+                "instance_ip": ip,
+                "ssh_user": ssh_user,
+            }
         return out
 
     def _ssh_tar_stream(self, key_path, ssh_user, ip, remote_cmd, dest_dir, timeout=900):
@@ -753,15 +774,15 @@ exec /opt/cool/venvs/python_3.12/bin/python /opt/pipeline-mcp-server.py
             return False
         return tar_rc == 0 and ssh_rc == 0
 
-    def _scp_sequential(self, key_path, ssh_user, ip, images, local_dir):
+    def _scp_sequential(self, key_path, ssh_user, ip, images, local_dir, remote_to_local=None):
         import os as _os, subprocess
-        jobs = []
-        for chunk in images.get("chunks", []) or []:
-            jobs.append((chunk["path"], _os.path.join(local_dir, chunk["name"] + ".jpg")))
-        if images.get("merged"):
-            jobs.append((images["merged"]["path"], _os.path.join(local_dir, "mosaic_merged.jpg")))
-        if images.get("merged_preview"):
-            jobs.append((images["merged_preview"]["path"], _os.path.join(local_dir, "mosaic_merged_preview.jpg")))
+        if remote_to_local is None:
+            remote_to_local = {}
+            for chunk in images.get("chunks", []) or []:
+                remote_to_local[chunk["path"]] = chunk["name"] + ".jpg"
+            if images.get("merged_preview"):
+                remote_to_local[images["merged_preview"]["path"]] = "mosaic_merged_preview.jpg"
+        jobs = [(r, _os.path.join(local_dir, n)) for r, n in remote_to_local.items()]
         for remote, local in jobs:
             try:
                 subprocess.run(
@@ -850,7 +871,7 @@ echo "Pipeline ready" > /tmp/pipeline_ready
         current_run = getattr(task, "current_run", "cool")
 
         # Helper to build image URLs from local images
-        def _build_local_urls(local_imgs, endpoint="local-image"):
+        def _build_local_urls(local_imgs, endpoint="local-image", which="cool"):
             urls = {"chunks": [], "merged": None, "merged_preview": None}
             if not local_imgs:
                 return urls
@@ -860,16 +881,18 @@ echo "Pipeline ready" > /tmp/pipeline_ready
                     "url": f"/api/benchmark/{task.task_id}/{endpoint}?name={chunk['name']}.jpg",
                     "size_bytes": chunk.get("size_bytes", 0),
                 })
-            if local_imgs.get("merged"):
-                urls["merged"] = {
-                    "url": f"/api/benchmark/{task.task_id}/{endpoint}?name=mosaic_merged.jpg",
-                    "size_bytes": local_imgs["merged"].get("size_bytes", 0),
-                    "download_url": f"/api/benchmark/{task.task_id}/{endpoint}?name=mosaic_merged.jpg&download=1",
-                }
             if local_imgs.get("merged_preview"):
                 urls["merged_preview"] = {
                     "url": f"/api/benchmark/{task.task_id}/{endpoint}?name=mosaic_merged_preview.jpg",
                     "size_bytes": local_imgs["merged_preview"].get("size_bytes", 0),
+                }
+            if local_imgs.get("merged"):
+                full_url = f"/api/benchmark/{task.task_id}/full-mosaic?which={which}"
+                urls["merged"] = {
+                    "url": urls["merged_preview"]["url"] if urls["merged_preview"] else full_url,
+                    "size_bytes": local_imgs["merged"].get("size_bytes", 0),
+                    "download_url": full_url + "&download=1",
+                    "on_demand": True,
                 }
             return urls
 
@@ -907,17 +930,17 @@ echo "Pipeline ready" > /tmp/pipeline_ready
 
         if getattr(task, "mode", "diy") == "diy":
             # DIY-only: images live in the primary local set (served by /local-image)
-            diy_image_urls = _build_local_urls(local_images, "local-image") if primary_local_ready else _build_remote_urls(pipeline_images)
+            diy_image_urls = _build_local_urls(local_images, "local-image", "diy") if primary_local_ready else _build_remote_urls(pipeline_images)
             cool_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
         elif current_run in ("diy", "reconfiguring"):
             # Compare mode, DIY phase: _last_pipeline_images has DIY images
-            diy_image_urls = _build_local_urls(diy_local_images, "diy-image") if diy_local_ready else _build_remote_urls(diy_pipeline_images or pipeline_images)
+            diy_image_urls = _build_local_urls(diy_local_images, "diy-image", "diy") if diy_local_ready else _build_remote_urls(diy_pipeline_images or pipeline_images)
             cool_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
         else:
             # COOL phase / completed: keep serving the live instance images until
             # the background download finishes, then switch to local files.
-            cool_image_urls = _build_local_urls(local_images, "local-image") if primary_local_ready else _build_remote_urls(pipeline_images)
-            diy_image_urls = _build_local_urls(diy_local_images, "diy-image") if diy_local_ready else _build_remote_urls(diy_pipeline_images)
+            cool_image_urls = _build_local_urls(local_images, "local-image", "cool") if primary_local_ready else _build_remote_urls(pipeline_images)
+            diy_image_urls = _build_local_urls(diy_local_images, "diy-image", "diy") if diy_local_ready else _build_remote_urls(diy_pipeline_images)
 
         # pipeline_images = COOL images (for backward compat with frontend)
         image_urls = cool_image_urls
@@ -1141,6 +1164,73 @@ async def create_app():
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
     app.router.add_get("/api/benchmark/{task_id}/local-image", handle_local_image)
+
+    async def handle_full_mosaic(request):
+        """Stream the full-resolution merged mosaic from the instance on demand.
+
+        The benchmark itself only downloads previews, so the heavy file is
+        fetched the first time the link is clicked and cached locally. Works
+        while the instance is alive; the cache keeps working after termination.
+        """
+        task_id = request.match_info["task_id"]
+        task = orchestrator.tasks.get(task_id)
+        if not task:
+            resp = web.json_response({"error": "Task not found"}, status=404)
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            return resp
+        which = request.query.get("which", "cool")
+        meta = getattr(task, "cool_merged" if which == "cool" else "diy_merged", None)
+        if not meta:
+            resp = web.json_response({"error": f"Full mosaic ({which}) is not available"}, status=404)
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            return resp
+
+        import subprocess, tempfile
+        cache = meta.get("cache_path")
+        expected = int(meta.get("size_bytes") or 0)
+        have_cache = bool(cache and os.path.exists(cache) and (not expected or os.path.getsize(cache) == expected))
+
+        if not have_cache:
+            ip = meta.get("instance_ip") or getattr(task, "instance_ip", None)
+            ssh_user = meta.get("ssh_user") or getattr(task, "ssh_user", "ubuntu")
+            if not ip:
+                resp = web.json_response(
+                    {"error": "Instance is no longer available; the full mosaic was not cached. "
+                              "Run the benchmark again or terminate only after downloading it."},
+                    status=410)
+                resp.headers['Access-Control-Allow-Origin'] = '*'
+                return resp
+            key_path = os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem"))
+            remote = meta["remote_path"]
+            os.makedirs(os.path.dirname(cache), exist_ok=True)
+            tmp = cache + "." + next(tempfile._get_candidate_names()) + ".part"
+
+            def _fetch():
+                return subprocess.run(
+                    ["scp", "-o", "StrictHostKeyChecking=no", "-o", "Compression=no",
+                     "-i", key_path, f"{ssh_user}@{ip}:{remote}", tmp],
+                    capture_output=True, text=True, timeout=900,
+                )
+
+            proc = await asyncio.to_thread(_fetch)
+            if proc.returncode != 0 or not os.path.exists(tmp):
+                try: os.unlink(tmp)
+                except Exception: pass
+                resp = web.json_response(
+                    {"error": "Could not fetch the full mosaic from the instance (it may have been terminated). "
+                              + (proc.stderr[-200:] if proc.stderr else "")},
+                    status=502)
+                resp.headers['Access-Control-Allow-Origin'] = '*'
+                return resp
+            os.replace(tmp, cache)
+
+        resp = web.FileResponse(cache)
+        if request.query.get("download"):
+            resp.headers['Content-Disposition'] = f'attachment; filename="mosaic_merged_{which}.jpg"'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+
+    app.router.add_get("/api/benchmark/{task_id}/full-mosaic", handle_full_mosaic)
     app.router.add_post("/api/instances/cleanup", handle_cleanup)
     app.router.add_get("/health", lambda r: web.json_response({"status": "ok"}, headers={"Access-Control-Allow-Origin": "*"}))
 

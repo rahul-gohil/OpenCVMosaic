@@ -519,7 +519,8 @@
             if (images.merged && images.merged.download_url && !mergedDiv.querySelector("a")) {
                 const link = document.createElement("a");
                 link.href = images.merged.download_url;
-                link.textContent = "Download full mosaic (" + (images.merged.size_bytes / 1e6).toFixed(1) + " MB)";
+                link.textContent = "Download full mosaic (" + (images.merged.size_bytes / 1e6).toFixed(1) + " MB"
+                    + (images.merged.on_demand ? ", fetched from instance on click" : "") + ")";
                 mergedDiv.appendChild(link);
             }
         }

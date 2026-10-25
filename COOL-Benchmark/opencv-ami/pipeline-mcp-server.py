@@ -188,6 +188,30 @@ def _run_pipeline_sync(chunk_size, work_dir):
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 metrics["content_pct"] = round(100.0 * (gray > 10).mean(), 1)
 
+        # Harness artifact: small previews of each chunk strip for the UI.
+        # Generated after total_time is measured so they do not inflate the
+        # benchmark metrics.
+        try:
+            for chunk_dir in sorted(glob.glob(os.path.join(work_dir, "chunks", "chunk_*"))):
+                src = os.path.join(chunk_dir, "mosaic_final.jpg")
+                dst = os.path.join(chunk_dir, "mosaic_final_preview.jpg")
+                if not os.path.exists(src) or os.path.exists(dst):
+                    continue
+                im = cv2.imread(src)
+                if im is None:
+                    continue
+                h, w = im.shape[:2]
+                scale = min(1.0, 1200.0 / float(max(h, w)))
+                if scale < 1.0:
+                    im = cv2.resize(
+                        im,
+                        (max(1, int(w * scale)), max(1, int(h * scale))),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                cv2.imwrite(dst, im, [cv2.IMWRITE_JPEG_QUALITY, 82])
+        except Exception as e:
+            logger.warning(f"Could not generate chunk previews: {e}")
+
         _set_state(metrics=metrics)
         _set_progress("Completed", 100)
         _set_state(status="completed")
@@ -236,11 +260,16 @@ def _list_generated_images(work_dir):
     for chunk_dir in sorted(glob.glob(os.path.join(chunks_dir, "chunk_*"))):
         mosaic_path = os.path.join(chunk_dir, "mosaic_final.jpg")
         if os.path.exists(mosaic_path):
-            images["chunks"].append({
+            preview_path = os.path.join(chunk_dir, "mosaic_final_preview.jpg")
+            entry = {
                 "name": os.path.basename(chunk_dir),
                 "path": mosaic_path,
                 "size_bytes": os.path.getsize(mosaic_path),
-            })
+            }
+            if os.path.exists(preview_path):
+                entry["preview_path"] = preview_path
+                entry["preview_size_bytes"] = os.path.getsize(preview_path)
+            images["chunks"].append(entry)
     merged_path = os.path.join(work_dir, "merged", "mosaic_merged.jpg")
     preview_path = os.path.join(work_dir, "merged", "mosaic_merged_preview.jpg")
     if os.path.exists(merged_path):
