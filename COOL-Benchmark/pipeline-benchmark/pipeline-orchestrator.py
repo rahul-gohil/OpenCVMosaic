@@ -361,27 +361,6 @@ class PipelineOrchestrator:
         """
         pip_version = "5.0.0.93"
 
-        # Build the systemd service file content as a base64-encoded string
-        # to avoid all quoting/heredoc issues over SSH
-        import base64 as _b64
-        service_content = """[Unit]
-Description=Pipeline MCP Server (DIY pip)
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-Environment=PIPELINE_DIR=/opt/OpenCVMosaic
-ExecStart=/usr/bin/python3 /opt/pipeline-mcp-server.py
-Restart=always
-RestartSec=5
-StandardOutput=append:/tmp/pipeline-mcp.log
-StandardError=append:/tmp/pipeline-mcp.log
-
-[Install]
-WantedBy=multi-user.target
-"""
-        service_b64 = _b64.b64encode(service_content.encode()).decode()
 
         commands = [
             # Step 1: Stop COOL MCP server
@@ -422,9 +401,9 @@ WantedBy=multi-user.target
                 'python3 -c "import cv2; print(f\"DIY OpenCV {cv2.__version__} installed\")" || exit 1'
             ),
 
-            # Step 4: Write systemd service file via base64 (no heredoc issues)
+            # Step 4: Switching systemd to DIY (system Python)...
             'echo "Step 4: Switching systemd to DIY (system Python)..."',
-            f'echo "{service_b64}" | base64 -d | sudo tee /etc/systemd/system/pipeline-mcp.service > /dev/null',
+            "sudo mv /tmp/pipeline-mcp-diy.service /etc/systemd/system/pipeline-mcp.service",
             "sudo systemctl daemon-reload",
 
             # Step 5: Restart with DIY config
@@ -439,12 +418,50 @@ WantedBy=multi-user.target
             'echo "DIY reconfiguration complete"',
         ]
 
-        import subprocess
+        import subprocess, tempfile, os as _os
         key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
         ssh_user = "ubuntu"
+
+        # Write systemd service file locally and SCP to instance (avoids SSH quoting issues)
+        service_content = """[Unit]
+Description=Pipeline MCP Server (DIY pip)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Environment=PIPELINE_DIR=/opt/OpenCVMosaic
+ExecStart=/usr/bin/python3 /opt/pipeline-mcp-server.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/tmp/pipeline-mcp.log
+StandardError=append:/tmp/pipeline-mcp.log
+
+[Install]
+WantedBy=multi-user.target
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".service", delete=False) as f:
+            f.write(service_content)
+            local_service_path = f.name
+
+        # SCP service file to instance
+        scp_proc = subprocess.run(
+            ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
+             local_service_path, f"{ssh_user}@{ip}:/tmp/pipeline-mcp-diy.service"],
+            capture_output=True, text=True, timeout=30
+        )
+        if scp_proc.returncode != 0:
+            raise Exception(f"Failed to SCP service file: {scp_proc.stderr}")
+
         ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-i", key_path,
                    f"{ssh_user}@{ip}", " && ".join(commands)]
         result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=300)
+
+        # Clean up temp file
+        try:
+            _os.unlink(local_service_path)
+        except Exception:
+            pass
         if result.returncode != 0:
             logger.error(f"Reconfigure stdout: {result.stdout}")
             logger.error(f"Reconfigure stderr: {result.stderr}")
