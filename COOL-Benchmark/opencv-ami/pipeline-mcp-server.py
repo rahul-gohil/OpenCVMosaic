@@ -81,6 +81,20 @@ def _run_pipeline_sync(chunk_size, work_dir):
         pipeline_state["progress"] = {"current_step": "Loading local assets", "progress_percent": 5}
         dl_time = 0.0
 
+        # Build a clean subprocess env. Only keep PYTHONPATH/LD_LIBRARY_PATH
+        # when the current mode actually set them (COOL). This guarantees DIY
+        # subprocesses do not inherit COOL paths.
+        pipeline_env = dict(os.environ)
+        if not pipeline_env.get("PYTHONPATH"):
+            pipeline_env.pop("PYTHONPATH", None)
+        if not pipeline_env.get("LD_LIBRARY_PATH"):
+            pipeline_env.pop("LD_LIBRARY_PATH", None)
+        logger.info(
+            f"Pipeline subprocess env: python={PYTHON} "
+            f"PYTHONPATH={pipeline_env.get('PYTHONPATH', '<unset>')} "
+            f"LD_LIBRARY_PATH={pipeline_env.get('LD_LIBRARY_PATH', '<unset>')}"
+        )
+
         # Step 2: Run chunked stitching
         _set_progress("Stitching chunks", 15)
         stitch_start = time.perf_counter()
@@ -92,12 +106,7 @@ def _run_pipeline_sync(chunk_size, work_dir):
              "--output-root", os.path.join(work_dir, "chunks"),
              "--prefix", "chunk"],
             cwd=PIPELINE_DIR, capture_output=True, text=True,
-            _env = dict(os.environ)
-            if not _env.get("PYTHONPATH"):
-                _env.pop("PYTHONPATH", None)
-            if not _env.get("LD_LIBRARY_PATH"):
-                _env.pop("LD_LIBRARY_PATH", None)
-            env={**_env},
+            env=pipeline_env,
         )
         if proc.returncode != 0:
             logger.error(f"Stitch failed: {proc.stderr[-500:]}")
@@ -114,12 +123,7 @@ def _run_pipeline_sync(chunk_size, work_dir):
              "--inputs", chunk_pattern,
              "--out", os.path.join(work_dir, "merged")],
             cwd=PIPELINE_DIR, capture_output=True, text=True,
-            _env = dict(os.environ)
-            if not _env.get("PYTHONPATH"):
-                _env.pop("PYTHONPATH", None)
-            if not _env.get("LD_LIBRARY_PATH"):
-                _env.pop("LD_LIBRARY_PATH", None)
-            env={**_env},
+            env=pipeline_env,
         )
         if proc.returncode != 0:
             logger.error(f"Merge failed: {proc.stderr[-500:]}")
