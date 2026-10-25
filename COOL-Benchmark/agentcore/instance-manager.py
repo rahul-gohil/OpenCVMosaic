@@ -8,9 +8,11 @@ import asyncio
 import json
 import logging
 import os
+import random
 import time
 from typing import Dict, List, Optional, Any
 import boto3
+from botocore.exceptions import ClientError
 from dataclasses import dataclass
 from enum import Enum
 import aiohttp
@@ -57,6 +59,7 @@ class InstanceManager:
         # Configuration
         self.vpc_id = None
         self.subnet_ids = []
+        self.subnet_azs = {}
         self.security_group_id = None
         self.key_pair_name = os.environ.get("EC2_KEY_PAIR_NAME", "")
         
@@ -101,11 +104,58 @@ class InstanceManager:
                 params["UserData"] = user_data
             if self.security_group_id:
                 params["SecurityGroupIds"] = [self.security_group_id]
-            if self.subnet_ids:
-                params["SubnetId"] = self.subnet_ids[0]
 
-            logger.info(f"Launching instance: type={instance_type}, ami={ami_id}, key={key_name}")
-            response = self.ec2_client.run_instances(**params)
+            # Try subnets in different Availability Zones until one has capacity.
+            # EC2 returns InsufficientInstanceCapacity when the requested AZ is
+            # full; the same instance type is often launchable in a sibling AZ.
+            override = os.environ.get("EC2_SUBNET_ID")
+            if override:
+                candidates = [override]
+            else:
+                candidates = list(self.subnet_ids) or [None]
+                # rotate so repeated runs do not always start on the same AZ
+                random.shuffle(candidates)
+                # last resort: let EC2 pick a default subnet/ZK in the VPC
+                if None not in candidates:
+                    candidates.append(None)
+
+            logger.info(
+                f"Launching instance: type={instance_type}, ami={ami_id}, key={key_name}, "
+                f"subnet candidates={candidates}"
+            )
+
+            last_error = None
+            response = None
+            for idx, subnet_id in enumerate(candidates):
+                attempt = dict(params)
+                if subnet_id:
+                    attempt["SubnetId"] = subnet_id
+                try:
+                    response = self.ec2_client.run_instances(**attempt)
+                    if subnet_id:
+                        logger.info(f"Launched in subnet {subnet_id} (attempt {idx + 1}/{len(candidates)})")
+                    break
+                except ClientError as e:
+                    code = e.response.get("Error", {}).get("Code", "")
+                    if code in (
+                        "InsufficientInstanceCapacity",
+                        "InsufficientHostCapacity",
+                        "Unsupported",
+                        "InvalidParameterValue",
+                    ) and idx + 1 < len(candidates):
+                        logger.warning(
+                            f"Capacity unavailable in subnet {subnet_id} ({code}); "
+                            f"trying next AZ ({idx + 2}/{len(candidates)})"
+                        )
+                        last_error = e
+                        continue
+                    raise
+
+            if response is None:
+                if last_error:
+                    raise last_error
+                raise RuntimeError("No subnet candidates available to launch the instance")
+
             instance_id = response["Instances"][0]["InstanceId"]
             logger.info(f"Launched instance {instance_id}")
 
@@ -155,6 +205,7 @@ class InstanceManager:
                     ]
                 )
                 self.subnet_ids = [subnet['SubnetId'] for subnet in subnets['Subnets']]
+                self.subnet_azs = {s['SubnetId']: s.get('AvailabilityZone', '?') for s in subnets['Subnets']}
                 
                 # If no private subnets found, use any subnet in the VPC
                 if not self.subnet_ids:
@@ -163,8 +214,12 @@ class InstanceManager:
                         Filters=[{'Name': 'vpc-id', 'Values': [self.vpc_id]}]
                     )
                     self.subnet_ids = [subnet['SubnetId'] for subnet in all_subnets['Subnets']]
+                    self.subnet_azs = {s['SubnetId']: s.get('AvailabilityZone', '?') for s in all_subnets['Subnets']}
                 
-                logger.info(f"Found subnets: {self.subnet_ids}")
+                logger.info(
+                    "Found subnets: "
+                    + ", ".join(f"{sid} ({getattr(self, 'subnet_azs', {}).get(sid, '?')})" for sid in self.subnet_ids)
+                )
             
             # Find or create security group with port 8080 open
             if self.vpc_id:
