@@ -341,50 +341,97 @@ class PipelineOrchestrator:
                         raise Exception(f"Lost connection to instance after 5 retries: {e}")
 
     async def _reconfigure_to_pip(self, ip: str):
-        """Reconfigure from COOL to DIY using system Python + pip OpenCV."""
+        """Reconfigure from COOL to DIY using system Python + pip OpenCV.
+
+        Uses SSH (not SSM). Avoids heredoc-in-bash-c issues by writing
+        the systemd service file via python3 -c instead of cat heredoc.
+        """
         pip_version = "5.0.0.93"
+
+        # Build the systemd service file content as a base64-encoded string
+        # to avoid all quoting/heredoc issues over SSH
+        import base64 as _b64
+        service_content = """[Unit]
+Description=Pipeline MCP Server (DIY pip)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Environment=PIPELINE_DIR=/opt/OpenCVMosaic
+ExecStart=/usr/bin/python3 /opt/pipeline-mcp-server.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/tmp/pipeline-mcp.log
+StandardError=append:/tmp/pipeline-mcp.log
+
+[Install]
+WantedBy=multi-user.target
+"""
+        service_b64 = _b64.b64encode(service_content.encode()).decode()
+
         commands = [
+            # Step 1: Stop COOL MCP server
             'echo "Step 1: Stopping COOL MCP server..."',
             "sudo systemctl stop pipeline-mcp 2>/dev/null || true",
             "sleep 2",
+
+            # Step 2: Install pip + OpenCV via system Python
             'echo "Step 2: Installing pip + OpenCV via system Python..."',
             "sudo apt-get update -y -qq",
             "sudo apt-get install -y -qq python3-pip",
-            f"pip3 install --break-system-packages opencv-python-headless=={pip_version} numpy scipy aiohttp || exit 1",
-            'echo "Step 3: Registering bundled wheel libs..."',
-            'SITE_PKG=$(python3 -c "import site; print(site.getsitepackages()[0])") && '
-            'LDCONF=/etc/ld.so.conf.d/pip-wheel-bundled.conf && '
-            '> "$LDCONF" && '
-            'for D in "$SITE_PKG/numpy.libs" "$SITE_PKG/opencv_python_headless.libs"; do '
-            '  [ -d "$D" ] && echo "$D" >> "$LDCONF"; '
-            'done; '
-            'sudo ldconfig',
+            f"sudo pip3 install --break-system-packages opencv-python-headless=={pip_version} numpy scipy aiohttp || exit 1",
+
+            # Step 3: Register bundled wheel libs + fix cv2 bootstrap
+            (
+                'echo "Step 3: Registering bundled wheel libs and fixing cv2 bootstrap..." && '
+                'SITE_PKG=$(python3 -c "import site; print(site.getsitepackages()[0])") && '
+                'LDCONF=/etc/ld.so.conf.d/pip-wheel-bundled.conf && '
+                '> "$LDCONF" && '
+                'for D in "$SITE_PKG/numpy.libs" "$SITE_PKG/opencv_python_headless.libs"; do '
+                '  [ -d "$D" ] && echo "$D" >> "$LDCONF" && echo "Registered: $D"; '
+                'done; '
+                'sudo ldconfig && '
+                'CV2_DIR="$SITE_PKG/cv2" && '
+                'ABI3="$CV2_DIR/cv2.abi3.so" && '
+                'PY312="$CV2_DIR/python-3.12" && '
+                '[ -f "$PY312/cv2.cpython-312-aarch64-linux-gnu.so" ] && '
+                '  rm -f "$PY312/cv2.cpython-312-aarch64-linux-gnu.so" && '
+                '  echo "Removed stale cpython-312 extension"; '
+                'find "$CV2_DIR" -maxdepth 1 -name "cv2.cpython-*.so" -delete 2>/dev/null; '
+                '[ -f "$ABI3" ] && mkdir -p "$PY312" && ln -sf "$ABI3" "$PY312/cv2.abi3.so" && '
+                '  echo "Linked abi3 into python-3.12/"; '
+                'python3 -c "import cv2; print(f\"DIY OpenCV {cv2.__version__} installed\")" || exit 1'
+            ),
+
+            # Step 4: Write systemd service file via base64 (no heredoc issues)
             'echo "Step 4: Switching systemd to DIY (system Python)..."',
-            "sudo bash -c 'cat > /etc/systemd/system/pipeline-mcp.service << EOFSYSTEMD",
-            "[Unit]",
-            "Description=Pipeline MCP Server (DIY pip)",
-            "After=network.target",
-            "",
-            "[Service]",
-            "Type=simple",
-            "User=ubuntu",
-            "Environment=PIPELINE_DIR=/opt/OpenCVMosaic",
-            "ExecStart=/usr/bin/python3 /opt/pipeline-mcp-server.py",
-            "Restart=always",
-            "RestartSec=5",
-            "",
-            "[Install]",
-            "WantedBy=multi-user.target",
-            "EOFSYSTEMD'",
+            f'echo "{service_b64}" | base64 -d | sudo tee /etc/systemd/system/pipeline-mcp.service > /dev/null',
             "sudo systemctl daemon-reload",
+
+            # Step 5: Restart with DIY config
+            'echo "Step 5: Starting DIY MCP server..."',
             "sudo systemctl restart pipeline-mcp 2>/dev/null || true",
+            "sleep 5",
+
+            # Step 6: Verify
+            'echo "Step 6: Verifying DIY MCP server..."',
+            'for i in $(seq 1 30); do STATUS=$(systemctl is-active pipeline-mcp 2>/dev/null || true); if [ "$STATUS" = "active" ]; then echo "MCP service active"; break; fi; echo "Waiting for MCP service... ($STATUS, ${i}s)"; sleep 1; done',
+            'curl -s http://localhost:8080/health || echo "MCP not yet responding"',
+            'echo "DIY reconfiguration complete"',
         ]
+
         import subprocess
         key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
         ssh_user = "ubuntu"
         ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-i", key_path,
                    f"{ssh_user}@{ip}", " && ".join(commands)]
-        subprocess.run(ssh_cmd, check=True, timeout=300)
+        result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            logger.error(f"Reconfigure stdout: {result.stdout}")
+            logger.error(f"Reconfigure stderr: {result.stderr}")
+            raise Exception(f"DIY reconfiguration failed: {result.stderr[:500]}")
+
         # Wait for MCP server to be ready in DIY mode
         import asyncio
         for i in range(30):
@@ -396,6 +443,8 @@ class PipelineOrchestrator:
                             if not data.get("is_cool", True):
                                 logger.info(f"MCP server ready in DIY mode (OpenCV {data.get('opencv_version')}) on {ip}")
                                 return
+                            else:
+                                logger.warning(f"MCP server still in COOL mode, retrying... (is_cool={data.get('is_cool')})")
             except Exception:
                 pass
             await asyncio.sleep(5)
@@ -493,19 +542,17 @@ class PipelineOrchestrator:
 
     def _get_user_data(self) -> str:
         return """#!/bin/bash
-set -e
-# COOL AMI is Amazon Linux (Graviton5) - has Python and git pre-installed
+# COOL AMI (Ubuntu 24.04, Graviton5) - has Python and git pre-installed
 cd /opt
 if [ ! -d "/opt/OpenCVMosaic" ]; then
     git clone --depth 1 https://github.com/rahul-gohil/OpenCVMosaic.git /opt/OpenCVMosaic
 fi
 cd /opt/OpenCVMosaic
 # Install aiohttp in COOL venv (for MCP server)
-/opt/cool/venvs/python_3.12/bin/pip install --quiet numpy scipy aiohttp
-# Install python3-pip and pip's OpenCV for DIY comparison mode
-sudo apt-get update -y -qq
-sudo apt-get install -y -qq python3-pip
-pip3 install --break-system-packages opencv-python-headless==5.0.0.93 numpy scipy aiohttp
+/opt/cool/venvs/python_3.12/bin/pip install --quiet numpy scipy aiohttp 2>/dev/null || true
+# Ensure python3-pip is available for DIY comparison mode (installed via reconfigure if needed)
+apt-get update -y -qq 2>/dev/null || true
+apt-get install -y -qq python3-pip 2>/dev/null || true
 cp /opt/OpenCVMosaic/COOL-Benchmark/opencv-ami/pipeline-mcp-server.py /opt/pipeline-mcp-server.py
 # Create wrapper script that uses COOL venv Python with COOL's OpenCV
 cat > /opt/run-mcp.sh << 'WRAPPER'
