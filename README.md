@@ -5,20 +5,44 @@ ordered sequence of still images.  The processing procedure follows the paper
 
 > **Real-Time 2D Orthomosaic Mapping from UAV Video via Feature-Based Image
 > Registration**, Hwang *et al.*, *Appl. Sci.* **2026**, *16*, 2133
-> (`Papers/applsci-16-02133.pdf`)
 
-restricted to still images: **no video handling is implemented at this stage.**
+restricted to still images.
 
 ```
-read image -> SIFT -> match -> RANSAC homography -> accumulate -> warp onto the
-canvas -> blend (overwrite/feather) -> write the canvas
+read image -> SIFT -> match -> RANSAC homography -> register
+           -> warp onto the canvas -> blend -> write canvas
 ```
 
 ## Quick start
 
+Requires Python 3.9+ (tested on 3.12 and 3.14) and the two dependencies in
+`requirements.txt` (`opencv-python-headless`, `numpy`).
+
+The repository ships a small 86-frame dataset (half-resolution UAVPistachio)
+under `COOL-Benchmark/assets/`, so the pipeline can be tried without any
+download:
+
 ```bash
-python main.py --dataset datasets/UAVPistachio/images_nadir_RGB \
-               --output-root outputs --run-name pistachio
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+
+python main.py run --dataset COOL-Benchmark/assets --pattern '*.jpg' \
+                   --output-root outputs --run-name pistachio
+```
+
+The original full-resolution dataset path used during development
+(`datasets/UAVPistachio/images_nadir_RGB`) is not distributed with the
+repository; point `--dataset` at wherever it lives.  The top-level form
+(`python main.py --dataset ...`) is kept as an alias for `main.py run`.
+
+A long sequence is normally processed in overlapping chunks and merged
+afterwards (see *Chunked runs* below):
+
+```bash
+python main.py run-chunks --dataset COOL-Benchmark/assets --pattern '*.jpg' \
+                          --chunk-size 18 --output-root outputs --prefix pistachio
+python main.py merge --inputs 'outputs/pistachio_*/mosaic_final.jpg' \
+                     --out outputs/merged
 ```
 
 Every update of the canvas is written into `outputs/<run-name>/`:
@@ -27,6 +51,7 @@ Every update of the canvas is written into `outputs/<run-name>/`:
 | --- | --- |
 | `canvas_0000_x0.1.jpg` … | the mosaic scaled down by 10 %, after every frame |
 | `mosaic_final.jpg` | the final mosaic at its native resolution |
+| `mosaic_final_mask.png` | validity mask of the final mosaic (0 = no data) |
 | `timings.csv` | per step timings |
 | `report.json`, `config.json` | run report and the configuration used |
 
@@ -34,168 +59,58 @@ The native resolution canvas is written only at the end of the run; the
 encoding of the full size mosaic dominates the runtime of the pipeline, so
 intermediate full-size writes are off by default.
 
-### Memory of the mosaic
+## Chunked runs and merging
 
-The canvas stores the mosaic (three bytes per pixel) and its validity mask
-(one byte per pixel), so it needs about **four bytes per pixel**.  A mosaic
-that covers a long flight path therefore grows quickly: lower
-`--canvas-scale` to trade resolution for memory.  The geometry is not
-affected by it, the homographies are always estimated on the original
-resolution of the frames.
+A long sequence is normally split into overlapping chunks so that memory and
+the cost of a single run stay bounded.  `run-chunks` names each folder from the
+frame range (`pistachio_001_018`, `pistachio_018_035`, …) and passes one shared
+frame between consecutive chunks, so the mosaics overlap.
 
-## The pipeline
+`merge` then combines the chunk mosaics level by level: it merges pairs, keeps
+at most one unpaired mosaic for the next level, and carries that mosaic forward
+until a single one is left.  The validity of each mosaic is recovered from its
+black background (flood fill from the border) or from the mask written by the
+pipeline, and the merge is masked so empty canvas does not leak into the
+result.
 
-### 1. Dataset (`mosaic/dataset.py`)
+The merged result is `mosaic_merged.jpg` plus `mosaic_merged_mask.png`;
+per-stage merge timings are written to `merge_timings.json`.
 
-The frames are discovered with a glob pattern and ordered by the number in
-their file name (`DJI_0002.JPG` before `DJI_0010.JPG`), so the sequence follows
-the acquisition order of the flight.
+## Tests
 
-### 2. Feature detection (`mosaic/features.py`)
-
-Every frame is converted to grayscale and processed with **SIFT**.  The paper
-bounds the number of retained keypoints per frame (`N_max`) by keeping the
-strongest detector responses; OpenCV exposes that budget directly through the
-`nfeatures` argument of `cv2.SIFT_create`, so the pruning happens inside the
-detector instead of being emulated afterwards.
-
-Defaults follow Table 1 of the paper: `nOctaveLayers = 3`,
-`contrastThreshold = 0.04`, `edgeThreshold = 10`, `sigma = 1.6`, `N_max = 500`.
-Only SIFT is used (ORB, KAZE and BRISK were dropped per the paper's
-requirements).
-
-### 3. Matching (`mosaic/matching.py`)
-
-The descriptors of the previous and of the incoming frame are matched with
-**FLANN** (KD-tree, 5 trees, 50 checks) and filtered with **Lowe's ratio
-test** (`0.7`).  Only the ratio test is applied; the mutual check of the
-original implementation was dropped.
-
-### 4. Robust homography (`mosaic/registration.py`)
-
-The inter-frame geometry is modelled with a **planar homography**.  It is
-estimated with **RANSAC** (reprojection threshold `5 px`) and re-estimated on
-the inlier set only, which improves the stability of the model.
-
-A frame is only accepted when the inlier support satisfies a minimum
-acceptance criterion (`--min-inliers`).  Otherwise the update is rejected so
-that an unreliable transform is never propagated through the accumulation.  A
-grossly wrong model (implausible scale change, degenerate matrix) is rejected
-as well.
-
-### 5. Registration against the mosaic (`mosaic/store.py`)
-
-The paper registers every frame against its **predecessor** and accumulates the
-inter-frame transforms (Eq. 6):
-
-```
-G_0 = I ,   G_{k+1} = G_k @ H_{k->k+1}
+```bash
+python -m unittest discover -s tests
 ```
 
-The transform of frame `k` therefore contains the sum of all the errors made
-on the way, which shows up as a growing misalignment over a long sequence. The
-paper acknowledges this ("drift may accumulate as sequences length
-increases"), and it is what makes the seams appear.
+The tests cover case-insensitive frame discovery, sequence-index frame ids in
+the store, the safe homogeneous divide, and the rejection of a featureless
+frame (which used to raise instead of being skipped).
 
-This implementation registers every frame against the **accumulated mosaic**.
-The SIFT features of the mosaic are kept in a *store*, expressed in mosaic
-coordinates.  Three sources of correspondences are used, each for a different
-job:
-
-| source | what it carries | role |
-| --- | --- | --- |
-| the previous frame | the **relative motion** | the prediction the grounding is validated against |
-| the frames captured just before (`--grounding-window`) | the **relative motion**, pooled over several frames | the placement: re-estimated instead of chained, which cancels part of the error of the individual steps |
-| the frames captured further back | the **drift** of the part of the flight the frame belongs to | the grounding: the only evidence tying that part of the flight to the rest of the mosaic |
-
-The third group is what keeps the mosaic together.  A flight that comes back
-over ground it covered earlier drifts slowly with respect to the parts that
-were mapped before it, and only the correspondences with those frames carry
-that drift.  They are fitted on their own, as a separate homography, and the
-result is accepted only when it is supported, precise (the reprojection error
-stays small) and stays within reach of the prediction.  Otherwise the frame
-is placed from the recent frames instead: the relative motion is reliable,
-only its absolute placement drifts.
-
-The store selects its candidates by **spatial proximity**: the features that
-are physically close to where the frame lands.  A flight that comes back over
-ground it covered earlier puts the frame close to frames that were captured a
-long time ago, and those are the candidates that tie it to the rest of the
-mosaic.
-
-The store keeps **one descriptor per ground location** - a new observation
-replaces the previous one. Duplicated descriptors would break the ratio test,
-because the second best candidate of a match would be a copy of the best one.
-The store only holds keypoints and descriptors, never pixels, so it stays in
-the order of a few megabytes.
-
-`--registration frame` restores the behaviour of the paper (predecessor +
-accumulation) for comparison.
-
-### 6. Canvas and blending (`mosaic/canvas.py`, `mosaic/blending.py`)
-
-The four corners of the incoming frame are transformed with `G_k`, the axis
-aligned bounding box is computed and the canvas is padded when the frame
-reaches outside of the current extent, while the existing mosaic content is
-preserved.
-
-The canvas keeps two things apart:
-
-* the **logical extent**, which is the tight bounding box of the mosaic and
-  defines where the orthomosaic actually ends,
-* the **allocated buffer**, which is slightly larger so that it does not have
-  to be reallocated on every step.  The slack lives outside of the logical
-  extent and is never part of the mosaic.
-
-The warped frame is then merged into the mosaic.  Two strategies are
-available:
-
-| `--blend` | what it does |
-| --- | --- |
-| `overwrite` | **the method of the paper** (Section 3.6): the pixels of the latest warped frame replace the existing ones in the overlap regions.  Cheap, and it never ghosts. |
-| `feather` | a linear ramp around the border of the warped frame.  Hides the seam of the overwrite at the cost of mixing the two images where they overlap, which is only visible when they are misregistered. |
-
-The weights handed to the blenders are built with the distance transform
-scheme of Brown & Lowe: every pixel is attributed to the image that owns it
-and the attribution changes smoothly across the overlap.
-
-> The paper only implements the overwrite baseline.  Multi-band (Laplacian
-> pyramid) blending was deliberately dropped: it mixes the high frequencies
-> of both images locally, so on a scene with parallax -- trees, buildings,
-> anything that is not a plane -- the two views of the same object survive
-> side by side and the mosaic shows ghosting.
-
-### 7. Output and runtime accounting (`mosaic/output.py`, `mosaic/pipeline.py`)
-
-Each stage is timed and reported:
+## Command line
 
 ```
-[12/86] DJI_0013.JPG
-   a) SIFT on DJI_0013.JPG took 1.944 s (501 keypoints)
-   b) matching took 0.009 s (134 matches)
-   c) homography took 0.007 s (81/134 inliers, ratio 0.60)
-   d) stitching took 2.765 s (canvas 5951x4025, 14206263 px updated)
-   e) saving the canvas took 1.204 s
+python main.py run         # one sequence (also the default with no subcommand)
+python main.py run-chunks  # split the sequence into overlapping chunks
+python main.py merge       # merge the chunk mosaics
 ```
 
-## Command line options
+`main.py run --help`, `main.py run-chunks --help` and `main.py merge --help`
+list the exact arguments.  The defaults:
 
 ```
---dataset PATH           folder with the images
---pattern GLOB           glob pattern of the images            (*.JPG)
+--dataset PATH           folder with the images       (datasets/UAVPistachio/...)
+--pattern GLOB           glob pattern of the images, case-insensitive (*.JPG)
 --start / --end INT      inclusive bounds of the sequence
 
 --registration {mosaic,frame}
-                         register a frame against the accumulated mosaic (no
-                         drift) or against its predecessor and accumulate the
-                         transforms                         (mosaic)
+                         register against the accumulated mosaic (no drift)
+                         or against the predecessor and accumulate (mosaic)
 --min-inliers INT        minimum inlier support to accept a frame    (20)
---store-min-distance F   minimum distance between two features of the
-                         mosaic store, in pixels                    (40.0)
+--store-min-distance F   lower bound of the store replacement radius, px (40)
 --query-margin F         margin around the predicted position used to
                          select the store features, in pixels      (1500)
 --grounding-window INT   number of recent frames whose matches describe
-                         the relative motion                (6)
+                         the relative motion                         (6)
 --store-max-features INT maximum number of features in the store    (50000)
 --no-relink              drop a frame instead of re-linking it
 
@@ -203,7 +118,8 @@ Each stage is timed and reported:
                          blending strategy (overwrite = the paper) (overwrite)
 --blend-ramp INT         width of the transition band in pixels      (32)
 
---canvas-scale FLOAT     resolution of the mosaic              (1.0)
+--canvas-scale FLOAT     resolution of the mosaic                   (1.0)
+--max-canvas-pixels INT  abort above this canvas size (0 = no limit)  (0)
 
 --output-root PATH       root folder of the runs               (outputs)
 --run-name NAME          name of the run folder
@@ -214,10 +130,21 @@ Each stage is timed and reported:
 --save-debug             write the match visualisations
 ```
 
+`run-chunks` adds `--chunk-size` (17), `--prefix` (default: dataset folder
+name) and `--extra` (extra arguments forwarded to `run`).  Consecutive chunks
+share one frame; with 86 frames and a chunk size of 18 the run produces five
+chunks and processes 90 frames (4 boundary frames are counted twice).
+
+`merge` takes `--inputs` (files or glob patterns, in order), `--out`,
+`--features`, `--detect-px`, `--min-inliers`, `--min-inlier-ratio`,
+`--threshold` and `--quality`.  It merges pairs level by level, carrying at
+most one unpaired mosaic to the next level, and writes `mosaic_merged.jpg`,
+its mask and `merge_timings.json`.
+
 ## Layout
 
 ```
-main.py                 command line entry point
+main.py                 command line entry point (run / run-chunks / merge)
 mosaic/
   config.py             every tunable of the pipeline
   dataset.py            ordered discovery / loading of the frames
@@ -229,19 +156,32 @@ mosaic/
   canvas.py             growable mosaic canvas, warping and placement
   blending.py           feather / overwrite blending
   pipeline.py           the incremental stitching loop
+  chunker.py            overlapping chunk runs
+  merge.py              level-wise merge of chunk mosaics
   output.py             artefact writing
+tests/
+  test_core.py          regression tests (python -m unittest discover -s tests)
+requirements.txt        opencv-python-headless, numpy
+COOL-Benchmark/         AWS Graviton5 benchmark harness (see its README)
 ```
 
 ## Benchmarking on AWS Graviton5 (COOL vs pip OpenCV)
 
 `COOL-Benchmark/` runs this exact pipeline on Graviton5 (`m9g`/`c9g`) and
 compares the COOL Marketplace OpenCV build against pip's
-`opencv-python-headless`, on the same instance, OS and Python version.
+`opencv-python-headless`, on the same instance and OS.
 
-* Orchestrator + web UI: `python COOL-Benchmark/pipeline-benchmark/pipeline-orchestrator.py`
-* Modes: DIY only, COOL only, Compare (DIY first, then COOL)
+* Orchestrator + web UI:
+  `python3 COOL-Benchmark/pipeline-benchmark/pipeline-orchestrator.py`
+  (then open <http://localhost:8080/>)
+* Modes: DIY only, COOL only, Compare (DIY first, then COOL).  DIY runs in a
+  dedicated Python 3.12 venv on the COOL AMI, so the only variable left is the
+  OpenCV build.
 * Metrics: per-stage chunk and merge timings, canvas size, content %, OpenCV
   version/path
+* Results are downloaded as previews; the full-resolution mosaics stay on the
+  instance and are fetched on demand (the instance is kept alive until you
+  terminate it)
 * No credentials are stored in the repository; configuration lives in a
   git-ignored `.env` and `config-marketplace.json`
 
