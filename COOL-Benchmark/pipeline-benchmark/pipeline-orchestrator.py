@@ -833,28 +833,29 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
         diy_pipeline_images = getattr(self, "_diy_pipeline_images", {})  # DIY images (saved)
         local_images = getattr(task, "local_images", None)  # COOL local images
         diy_local_images = getattr(task, "diy_local_images", None)  # DIY local images
+        # Determine current run for image routing
+        current_run = getattr(task, "current_run", "cool")
+
         # Helper to build image URLs from local images
-        def _build_local_urls(local_imgs, name_prefix=""):
+        def _build_local_urls(local_imgs, endpoint="local-image"):
             urls = {"chunks": [], "merged": None, "merged_preview": None}
             if not local_imgs:
                 return urls
             for chunk in local_imgs.get("chunks", []):
                 urls["chunks"].append({
                     "name": chunk["name"],
-                    "url": f"/api/benchmark/{task.task_id}/local-image?name={chunk['name']}.jpg" if name_prefix == "cool" else f"/api/benchmark/{task.task_id}/diy-image?name={chunk['name']}.jpg",
+                    "url": f"/api/benchmark/{task.task_id}/{endpoint}?name={chunk['name']}.jpg",
                     "size_bytes": chunk.get("size_bytes", 0),
                 })
             if local_imgs.get("merged"):
-                ep = "local-image" if name_prefix == "cool" else "diy-image"
                 urls["merged"] = {
-                    "url": f"/api/benchmark/{task.task_id}/{ep}?name=mosaic_merged.jpg",
+                    "url": f"/api/benchmark/{task.task_id}/{endpoint}?name=mosaic_merged.jpg",
                     "size_bytes": local_imgs["merged"].get("size_bytes", 0),
-                    "download_url": f"/api/benchmark/{task.task_id}/{ep}?name=mosaic_merged.jpg&download=1",
+                    "download_url": f"/api/benchmark/{task.task_id}/{endpoint}?name=mosaic_merged.jpg&download=1",
                 }
             if local_imgs.get("merged_preview"):
-                ep = "local-image" if name_prefix == "cool" else "diy-image"
                 urls["merged_preview"] = {
-                    "url": f"/api/benchmark/{task.task_id}/{ep}?name=mosaic_merged_preview.jpg",
+                    "url": f"/api/benchmark/{task.task_id}/{endpoint}?name=mosaic_merged_preview.jpg",
                     "size_bytes": local_imgs["merged_preview"].get("size_bytes", 0),
                 }
             return urls
@@ -884,21 +885,21 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
                 }
             return urls
 
-        # Build COOL image URLs (prefer local over remote)
-        if local_images:
-            cool_image_urls = _build_local_urls(local_images, "cool")
-        elif ip and pipeline_images:
-            cool_image_urls = _build_remote_urls(pipeline_images)
-        else:
-            cool_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
+        # During DIY run: only DIY images available (from _last_pipeline_images)
+        # During COOL run: COOL images available (from _last_pipeline_images), DIY from _diy_pipeline_images
+        # After completion: both available from local downloads
 
-        # Build DIY image URLs (prefer local over remote)
-        if diy_local_images:
-            diy_image_urls = _build_local_urls(diy_local_images, "diy")
-        elif ip and diy_pipeline_images:
-            diy_image_urls = _build_remote_urls(diy_pipeline_images)
+        if current_run in ("diy", "reconfiguring"):
+            # DIY run: _last_pipeline_images has DIY images
+            diy_image_urls = _build_local_urls(diy_local_images, "diy-image") if diy_local_images else _build_remote_urls(diy_pipeline_images or pipeline_images)
+            cool_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
         else:
-            diy_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
+            # COOL run or completed: _last_pipeline_images has COOL images
+            cool_image_urls = _build_local_urls(local_images, "local-image") if local_images else _build_remote_urls(pipeline_images)
+            diy_image_urls = _build_local_urls(diy_local_images, "diy-image") if diy_local_images else _build_remote_urls(diy_pipeline_images)
+
+        # pipeline_images = COOL images (for backward compat with frontend)
+        image_urls = cool_image_urls
 
         # pipeline_images = COOL images (for backward compat with frontend)
         image_urls = cool_image_urls
