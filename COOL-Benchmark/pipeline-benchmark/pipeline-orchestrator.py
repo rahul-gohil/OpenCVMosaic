@@ -388,7 +388,6 @@ WantedBy=multi-user.target
             'echo "Step 1: Stopping COOL MCP server and unattended-upgrades..."',
             "sudo systemctl stop pipeline-mcp 2>/dev/null || true",
             "sudo systemctl stop unattended-upgrades 2>/dev/null || true",
-            "sudo pkill -f unattended-upgrade 2>/dev/null || true",
             "sleep 2",
 
             # Step 2: Install pip + OpenCV via system Python
@@ -397,9 +396,8 @@ WantedBy=multi-user.target
             "sudo python3 -m ensurepip --upgrade 2>/dev/null || true",
             # Wait for any dpkg lock to be released (unattended-upgrades)
             'for i in $(seq 1 60); do if [ ! -f /var/lib/dpkg/lock-frontend ] || ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then break; fi; echo "Waiting for dpkg lock... ($i)"; sleep 2; done',
-            # If lock still held, kill unattended-upgrade process
-            'sudo pkill -f unattended-upgrade 2>/dev/null || true',
-            'sleep 2',
+            # If lock still held, wait more
+            'sleep 5',
             # Install OpenCV via pip (no apt-get needed)
             f"sudo pip3 install --break-system-packages --root-user-action=ignore opencv-python-headless=={pip_version} numpy scipy aiohttp || exit 1",
 
@@ -627,7 +625,6 @@ WantedBy=multi-user.target
 # COOL AMI (Ubuntu 24.04, Graviton5) - has Python and git pre-installed
 # Stop unattended-upgrades to avoid dpkg lock conflicts
 systemctl stop unattended-upgrades 2>/dev/null || true
-pkill -f unattended-upgrade 2>/dev/null || true
 cd /opt
 if [ ! -d "/opt/OpenCVMosaic" ]; then
     git clone --depth 1 https://github.com/rahul-gohil/OpenCVMosaic.git /opt/OpenCVMosaic
