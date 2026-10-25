@@ -199,6 +199,7 @@
         let currentMode = 'diy';
         let currentKeyPath = '~/.ssh/mosaic-key.pem';
         let usingLocalImages = false;
+        let coolUsingLocalImages = false;
 
         function log(msg) {
             const el = document.getElementById("log");
@@ -227,6 +228,7 @@
             document.getElementById("log").textContent = "";
             // Reset image panels for new run
             usingLocalImages = false;
+            coolUsingLocalImages = false;
             // Show/hide image panels based on mode
             const coolPanel = document.getElementById("images-title-cool").parentElement;
             const diyPanel = document.getElementById("images-title-diy").parentElement;
@@ -295,18 +297,19 @@
                         document.getElementById("images-card").classList.remove("hidden");
                     }
 
-                    // Update images gallery - target based on current run
+                    // Update images gallery - target based on current_run from server
+                    const isCompare = currentMode === "compare";
                     if (data.pipeline_images) {
-                        const isCompare = currentMode === "compare";
-                        const results = data.results || {};
-                        const coolDone = !!results.cool;
-                        const diyDone = !!results.diy;
-                        // During COOL run (no diy results yet), update COOL gallery
-                        // During DIY run (cool done but no diy), update DIY gallery
+                        const currentRun = data.current_run || "cool";
                         let target = "cool";
-                        if (isCompare && coolDone) target = "diy";
+                        if (currentRun === "diy" || currentRun === "completed") target = "diy";
                         if (!isCompare && currentMode === "diy") target = "diy";
+                        if (!isCompare && currentMode === "cool") target = "cool";
                         updateImageGallery(data.pipeline_images, target, isCompare);
+                    }
+                    // Update COOL gallery with saved COOL images (if available)
+                    if (isCompare && data.cool_pipeline_images && data.cool_pipeline_images.chunks && data.cool_pipeline_images.chunks.length > 0) {
+                        updateImageGallery(data.cool_pipeline_images, "cool", isCompare);
                     }
 
                     // Update per-stage timings
@@ -362,19 +365,26 @@
 
         function updateImageGallery(images, target, isCompare) {
             target = target || "cool";
-            const suffix = (isCompare && target === "diy") ? "-diy" : (isCompare ? "-cool" : "");
-            // For single mode, use unsuffixed IDs
-            const useSuffix = isCompare ? suffix : "";
-            const galleryId = useSuffix ? "strips-gallery" + useSuffix : "strips-gallery";
-            const mergedId = useSuffix ? "merged-preview" + useSuffix : "merged-preview";
+            // Determine gallery suffix based on mode and target
+            let suffix = "";
+            if (isCompare) {
+                suffix = (target === "diy") ? "-diy" : "-cool";
+            } else {
+                suffix = (currentMode === "diy") ? "-diy" : "-cool";
+            }
+            const galleryId = "strips-gallery" + suffix;
+            const mergedId = "merged-preview" + suffix;
             const gallery = document.getElementById(galleryId);
             const mergedDiv = document.getElementById(mergedId);
             if (!gallery || !mergedDiv) return;
 
             // If we just switched to local images, clear the gallery
-            const isLocal = images.chunks && images.chunks.length > 0 && images.chunks[0].url && images.chunks[0].url.includes("local-image");
-            if (isLocal && !usingLocalImages) {
-                usingLocalImages = true;
+            const isLocal = images.chunks && images.chunks.length > 0 && images.chunks[0].url && (images.chunks[0].url.includes("local-image") || images.chunks[0].url.includes("cool-image"));
+            const isCoolGallery = galleryId.includes("cool");
+            const flag = isCoolGallery ? coolUsingLocalImages : usingLocalImages;
+            if (isLocal && !flag) {
+                if (isCoolGallery) coolUsingLocalImages = true;
+                else usingLocalImages = true;
                 gallery.innerHTML = "";
                 mergedDiv.innerHTML = "";
             }
