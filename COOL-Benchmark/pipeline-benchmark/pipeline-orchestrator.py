@@ -46,6 +46,16 @@ InstanceManager = instance_manager_module.InstanceManager
 
 from build_manager import BuildManager
 
+# Load .env file if it exists
+_env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _key, _val = _line.split("=", 1)
+                os.environ.setdefault(_key.strip(), _val.strip())
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -428,7 +438,7 @@ class PipelineOrchestrator:
         ]
 
         import subprocess, tempfile, os as _os
-        key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
+        key_path = os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem"))
         ssh_user = "ubuntu"
 
         # Write systemd service file locally and SCP to instance (avoids SSH quoting issues)
@@ -497,7 +507,7 @@ WantedBy=multi-user.target
     async def _download_results_locally(self, task, ip: str):
         """Download pipeline results from instance to local machine before termination."""
         import subprocess, os as _os, tempfile
-        key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
+        key_path = os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem"))
         ssh_user = getattr(task, "ssh_user", "ec2-user")
         local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task.task_id}")
         os.makedirs(local_dir, exist_ok=True)
@@ -903,7 +913,7 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
             "instance_id": getattr(task, "instance_id", None),
             "instance_ip": getattr(task, "instance_ip", None),
             "ssh_user": getattr(task, "ssh_user", "ec2-user"),
-            "key_path": os.environ.get("EC2_KEY_PATH", "key.pem"),
+            "key_path": os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem")),
             "build_progress": task.build_progress,
             "pipeline_stage": getattr(self, "_last_pipeline_stage", ""),
             "pipeline_pct": getattr(self, "_last_pipeline_pct", 0),
@@ -960,7 +970,7 @@ async def create_app():
         resp = web.json_response({
             "ami_id": orchestrator.marketplace_ami_id,
             "diy_ami_id": orchestrator.diy_ami_id,
-            "key_path": os.environ.get("EC2_KEY_PATH", "key.pem"),
+            "key_path": os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem")),
         })
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
@@ -975,7 +985,7 @@ async def create_app():
         ip = task.instance_ip
         ssh_user = getattr(task, "ssh_user", "ec2-user")
         import subprocess
-        key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
+        key_path = os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem"))
         try:
             proc = subprocess.run(
                 ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
@@ -1021,7 +1031,7 @@ async def create_app():
             resp = web.json_response({"error": "No path"}, status=400)
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
-        key_path = os.environ.get("EC2_KEY_PATH", "key.pem")
+        key_path = os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem"))
         # Use SCP to fetch the image
         import subprocess, tempfile, os as _os
         tmp = tempfile.mktemp(suffix=".jpg")
