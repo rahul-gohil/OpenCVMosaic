@@ -44,7 +44,6 @@ instance_manager_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(instance_manager_module)
 InstanceManager = instance_manager_module.InstanceManager
 
-from build_manager import BuildManager
 
 # Load .env file if it exists
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
@@ -62,6 +61,20 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(), logging.FileHandler("pipeline-orchestrator.log")],
 )
 logger = logging.getLogger("pipeline-orchestrator")
+
+
+def _safe_local_file(local_dir: str, name: str):
+    """Resolve a served filename without allowing traversal outside local_dir."""
+    if not name or os.path.basename(name) != name or ".." in name or "/" in name or "\\" in name:
+        return None
+    try:
+        path = os.path.realpath(os.path.join(local_dir, name))
+        root = os.path.realpath(local_dir)
+        if os.path.commonpath([root, path]) != root:
+            return None
+    except ValueError:
+        return None
+    return path if os.path.exists(path) else None
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
 
@@ -102,13 +115,10 @@ class PipelineBenchmarkTask:
 
 
 class PipelineOrchestrator:
-    def __init__(self, region: str = None, marketplace_ami_id: str = None, diy_ami_id: str = None):
+    def __init__(self, region: str = None, marketplace_ami_id: str = None):
         self.region = region or os.environ.get("AWS_DEFAULT_REGION", os.environ.get("AWS_REGION", "us-east-1"))
         self.marketplace_ami_id = marketplace_ami_id or os.environ.get("MARKETPLACE_AMI_ID", "")
-        # Standard Graviton AMI for DIY-only mode (no COOL subscription needed)
-        self.diy_ami_id = diy_ami_id or os.environ.get("DIY_AMI_ID", "ami-0373a05f3fe4e2663")
         self.instance_manager = InstanceManager(region=self.region)
-        self.build_manager = BuildManager(region=self.region)
         self.tasks: Dict[str, PipelineBenchmarkTask] = {}
         self.default_region = self.region
         self._last_pipeline_images = {}
@@ -126,13 +136,10 @@ class PipelineOrchestrator:
                     marketplace = config.get("marketplace", {})
                     if not self.marketplace_ami_id:
                         self.marketplace_ami_id = marketplace.get("ami_id", self.marketplace_ami_id)
-                    diy = config.get("diy_ami", {})
-                    if diy.get("ami_id") and not os.environ.get("DIY_AMI_ID"):
-                        self.diy_ami_id = diy["ami_id"]
                     logger.info(f"Loaded marketplace config: COOL AMI={self.marketplace_ami_id}")
         except Exception as e:
             logger.warning(f"Could not load config-marketplace.json: {e}")
-        logger.info(f"Legacy DIY AMI (no longer used; DIY runs on the COOL AMI): {self.diy_ami_id}")
+        logger.info("All modes use the COOL Graviton5 AMI; DIY runs in a Python 3.12 venv")
 
     async def initialize(self):
         try:
@@ -142,11 +149,32 @@ class PipelineOrchestrator:
             logger.warning("Orchestrator will run in offline mode - AWS operations will fail")
         logger.info("Pipeline orchestrator initialized")
 
+    ALLOWED_INSTANCE_TYPES = {
+        "m9g.medium", "m9g.large", "m9g.xlarge", "m9g.2xlarge",
+        "c9g.medium", "c9g.large", "c9g.xlarge", "c9g.2xlarge",
+    }
+    ALLOWED_MODES = {"diy", "cool", "compare"}
+
     async def start_benchmark(
         self, instance_type: str, max_instances: int, chunk_size: int,
         opencv_version: str = "5",
         mode: str = "diy",
     ) -> str:
+        # Validate inputs. The endpoints are reachable from the network, so the
+        # orchestrator must not be a cost/abuse amplifier.
+        if mode not in self.ALLOWED_MODES:
+            raise ValueError(f"Unsupported mode: {mode}")
+        if instance_type not in self.ALLOWED_INSTANCE_TYPES:
+            raise ValueError(f"Unsupported instance type: {instance_type}")
+        if not isinstance(chunk_size, int) or not (1 <= chunk_size <= 200):
+            raise ValueError("chunk_size must be an integer between 1 and 200")
+
+        # Image state is held per orchestrator (not per task), so concurrent
+        # benchmarks would corrupt each other's galleries. Allow only one.
+        active = {"pending", "staging", "running", "downloading"}
+        if any(t.status.value in active for t in self.tasks.values()):
+            raise RuntimeError("Another benchmark is already running")
+
         task_id = str(__import__("uuid").uuid4())
         task = PipelineBenchmarkTask(
             task_id=task_id,
@@ -998,14 +1026,28 @@ async def create_app():
     # CORS middleware at module level (aiohttp 3.14 requires this)
 
     async def handle_start_benchmark(request):
-        data = await request.json()
-        task_id = await orchestrator.start_benchmark(
-            instance_type=data.get("instanceType", "m7g.xlarge"),
-            max_instances=data.get("maxInstances", 1),
-            chunk_size=data.get("chunkSize", 18),
-            opencv_version="5",
-            mode=data.get("mode", "diy"),
-        )
+        try:
+            data = await request.json()
+        except Exception:
+            resp = web.json_response({"error": "Invalid JSON body"}, status=400)
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            return resp
+        try:
+            task_id = await orchestrator.start_benchmark(
+                instance_type=data.get("instanceType", "m9g.xlarge"),
+                max_instances=int(data.get("maxInstances", 1)),
+                chunk_size=int(data.get("chunkSize", 18)),
+                opencv_version="5",
+                mode=data.get("mode", "diy"),
+            )
+        except ValueError as e:
+            resp = web.json_response({"error": str(e)}, status=400)
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            return resp
+        except RuntimeError as e:
+            resp = web.json_response({"error": str(e)}, status=409)
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            return resp
         resp = web.json_response({"taskId": task_id})
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp
@@ -1026,7 +1068,6 @@ async def create_app():
     async def handle_config(request):
         resp = web.json_response({
             "ami_id": orchestrator.marketplace_ami_id,
-            "diy_ami_id": orchestrator.diy_ami_id,
             "key_path": os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem")),
         })
         resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -1088,6 +1129,11 @@ async def create_app():
             resp = web.json_response({"error": "No path"}, status=400)
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
+        # Only ever proxy files from the benchmark scratch space on the instance.
+        if not img_path.startswith("/tmp/") or ".." in img_path:
+            resp = web.json_response({"error": "Access denied"}, status=403)
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            return resp
         key_path = os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem"))
         # Use SCP to fetch the image
         import subprocess, tempfile, os as _os
@@ -1124,10 +1170,10 @@ async def create_app():
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
         name = request.query.get("name", "")
-        import tempfile, os as _os
+        import tempfile
         local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task_id}-cool")
-        file_path = os.path.join(local_dir, name)
-        if not _os.path.exists(file_path):
+        file_path = _safe_local_file(local_dir, name)
+        if not file_path:
             resp = web.json_response({"error": "File not found"}, status=404)
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
@@ -1145,10 +1191,10 @@ async def create_app():
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
         name = request.query.get("name", "")
-        import tempfile, os as _os
+        import tempfile
         local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task_id}-diy")
-        file_path = os.path.join(local_dir, name)
-        if not _os.path.exists(file_path):
+        file_path = _safe_local_file(local_dir, name)
+        if not file_path:
             resp = web.json_response({"error": "File not found"}, status=404)
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
@@ -1168,8 +1214,8 @@ async def create_app():
         name = request.query.get("name", "")
         import tempfile
         local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task_id}")
-        file_path = os.path.join(local_dir, name)
-        if not os.path.exists(file_path):
+        file_path = _safe_local_file(local_dir, name)
+        if not file_path:
             resp = web.json_response({"error": "File not found"}, status=404)
             resp.headers['Access-Control-Allow-Origin'] = '*'
             return resp
@@ -1218,7 +1264,7 @@ async def create_app():
             key_path = os.environ.get("EC2_KEY_PATH", os.path.expanduser("~/.ssh/mosaic-key-us-east-1.pem"))
             remote = meta["remote_path"]
             os.makedirs(os.path.dirname(cache), exist_ok=True)
-            tmp = cache + "." + next(tempfile._get_candidate_names()) + ".part"
+            tmp = cache + "." + __import__('uuid').uuid4().hex + ".part"
 
             # Fail fast when the instance has already been terminated instead of
             # waiting for an SCP connect timeout.

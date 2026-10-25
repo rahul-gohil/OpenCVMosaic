@@ -1,56 +1,30 @@
-# Pipeline Benchmark for OpenCVMosaic
+# Pipeline benchmark
 
-Adapts the COOL-Benchmark harness to run the full orthomosaic pipeline
-(stitch + merge) on EC2 Graviton5 instances, comparing DIY (pip) OpenCV
-vs COOL (marketplace) OpenCV on the same instance.
-
-## Files
-
-- `pipeline-runner.py` — Runs on EC2. Downloads dataset from S3, runs chunk
-  stitching + merge, uploads results, returns JSON metrics.
-- `pipeline-benchmark.py` — Orchestrator. Launches one Graviton5 instance,
-  runs COOL first, reconfigures to DIY, runs again, compares results.
-- `setup-instance.sh` — User-data / setup script for EC2 instances.
-
-## Usage
+The supported entry point is the orchestrator:
 
 ```bash
-# 1. Upload your dataset to S3
-aws s3 sync outputs/pistachio_0*/ s3://your-bucket/inputs/pistachio/
-
-# 2. Run the benchmark
-python pipeline-benchmark.py \
-    --s3-input s3://your-bucket/inputs/pistachio \
-    --s3-output s3://your-bucket/benchmark_results \
-    --chunk-size 18 \
-    --instance-type m9g.4xlarge \
-    --region us-east-1 \
-    --key-pair your-key-pair \
-    --cool-ami ami-xxxxxxxxxxxxxxxxx \
-    --key-path ~/.ssh/your-key.pem
+cd ..
+python pipeline-benchmark/pipeline-orchestrator.py
+# open http://localhost:8080/
 ```
 
-## Metrics reported
+See [../README.md](../README.md) for prerequisites, configuration, modes,
+outputs, cost/cleanup and troubleshooting.
 
-- Per-stage timings (download, stitch, merge, upload)
-- Total wall-clock time
-- Canvas dimensions and content %
-- Peak memory (RSS)
-- Cost per orthomosaic (EC2 + COOL software fee)
-- Speedup ratio (DIY time / COOL time)
+## Files in this directory
 
-## Architecture
+| File | Used? | Purpose |
+|---|---|---|
+| `pipeline-orchestrator.py` | **yes** | REST API, EC2 orchestration, reconfiguration, result download, serves the UI |
+| `pipeline-benchmark.py` | no | upstream single-instance S3-based runner (legacy) |
+| `pipeline-runner.py` | no | upstream on-instance runner (legacy) |
+| `setup-instance.sh` | no | upstream cloud-init script (legacy) |
 
-```
-Single Graviton5 instance (m9g.4xlarge)
-    │
-    ├─ Phase 1: COOL build (marketplace AMI, OpenCV 5.1.0)
-    │   └─ Run pipeline → collect metrics
-    │
-    ├─ Reconfigure: pip install opencv-python-headless==5.0.0.93
-    │
-    └─ Phase 2: DIY build (pip OpenCV, OpenCV 5.0.0)
-        └─ Run pipeline → collect metrics
+The current flow is **DIY first, then COOL**, both on the COOL Graviton5 AMI:
 
-Compare: Phase 1 vs Phase 2 (same hardware, different OpenCV)
-```
+1. launch COOL AMI;
+2. reconfigure to a Python 3.12 venv with `opencv-python-headless` (DIY);
+3. run `main.py run-chunks` + `main.py merge` (work dir `/tmp/scratchpad_diy`);
+4. reconfigure back to COOL's venv + OpenCV;
+5. run again (work dir `/tmp/scratchpad_cool`);
+6. compare per-stage timings on the same hardware.

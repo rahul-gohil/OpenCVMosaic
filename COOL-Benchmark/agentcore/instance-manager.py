@@ -62,6 +62,10 @@ class InstanceManager:
         self.subnet_azs = {}
         self.security_group_id = None
         self.key_pair_name = os.environ.get("EC2_KEY_PAIR_NAME", "")
+        # CIDR allowed to reach the MCP/SSH ports. Defaults to the whole
+        # internet for convenience; set BENCHMARK_ALLOWED_CIDR (e.g.
+        # "203.0.113.7/32") to restrict it to your own address.
+        self.allowed_cidr = os.environ.get("BENCHMARK_ALLOWED_CIDR", "0.0.0.0/0")
         
     async def initialize(self):
         """Initialize the instance manager"""
@@ -71,7 +75,7 @@ class InstanceManager:
             await self._cleanup_orphaned_instances()
             # Start background task to cleanup idle instances
             asyncio.create_task(self._cleanup_idle_instances_loop())
-            logger.info("Instance manager initialized successfully")
+            logger.info(f"Instance manager initialized successfully (allowed CIDR: {self.allowed_cidr})")
         except Exception as e:
             logger.error(f"Failed to initialize instance manager: {e}")
             raise
@@ -273,13 +277,13 @@ class InstanceManager:
                             'IpProtocol': 'tcp',
                             'FromPort': 8080,
                             'ToPort': 8080,
-                            'IpRanges': [{'CidrIp': '0.0.0.0/0', 'Description': 'MCP server access'}]
+                            'IpRanges': [{'CidrIp': self.allowed_cidr, 'Description': 'MCP server access'}]
                         },
                         {
                             'IpProtocol': 'tcp',
                             'FromPort': 22,
                             'ToPort': 22,
-                            'IpRanges': [{'CidrIp': '0.0.0.0/0', 'Description': 'SSH access for logs and images'}]
+                            'IpRanges': [{'CidrIp': self.allowed_cidr, 'Description': 'SSH access for logs and images'}]
                         }
                     ]
                 )
@@ -324,7 +328,7 @@ class InstanceManager:
                                     'IpProtocol': 'tcp',
                                     'FromPort': port,
                                     'ToPort': port,
-                                    'IpRanges': [{'CidrIp': '0.0.0.0/0', 'Description': desc}]
+                                    'IpRanges': [{'CidrIp': self.allowed_cidr, 'Description': desc}]
                                 }
                             ]
                         )

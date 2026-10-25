@@ -5,13 +5,14 @@
     "license_key": null,
     "license_type": "per_instance",
     "supported_instance_types": [
-      "m6g.large",
-      "m6g.xlarge",
-      "m6g.2xlarge",
-      "c6g.large",
-      "c6g.xlarge"
+      "m9g.large",
+      "m9g.xlarge",
+      "m9g.2xlarge",
+      "c9g.large",
+      "c9g.xlarge",
+      "c9g.2xlarge"
     ],
-    "notes": "License key may be per-instance or account-wide depending on vendor"
+    "notes": "Cloud Optimized OpenCV (COOL) for AWS Graviton5. The AMI is built for Neoverse-V3, so use m9g/c9g families. License checks happen inside libopencv_core on the instance; no IAM permissions are required."
   },
   "license_configuration": {
     "method": "environment_variable",
@@ -23,8 +24,8 @@
     ]
   },
   "vendor_info": {
-    "name": "To be determined",
+    "name": "OpenCV (Cloud Optimized OpenCV)",
     "support_url": "https://aws.amazon.com/marketplace/",
-    "documentation_url": "Check marketplace listing"
+    "documentation_url": "https://aws.amazon.com/marketplace/pp/prodview-igdweaoo6prb6"
   }
 }

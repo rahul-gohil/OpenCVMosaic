@@ -301,9 +301,24 @@ async def handle_start_pipeline(request):
     if _get_state("status") == "running":
         return web.json_response({"error": "Pipeline already running"}, status=409)
 
-    data = await asyncio.wait_for(request.json(), timeout=60)
-    chunk_size = data.get("chunk_size", 18)
-    work_dir = data.get("work_dir", "/tmp/scratchpad")
+    try:
+        data = await asyncio.wait_for(request.json(), timeout=60)
+    except Exception:
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+    try:
+        chunk_size = int(data.get("chunk_size", 18))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "chunk_size must be an integer"}, status=400)
+    if not (1 <= chunk_size <= 200):
+        return web.json_response({"error": "chunk_size must be between 1 and 200"}, status=400)
+
+    # ``work_dir`` is removed recursively, so it must never escape /tmp.
+    requested_dir = data.get("work_dir", "/tmp/scratchpad")
+    tmp_root = os.path.realpath("/tmp")
+    work_dir = os.path.realpath(requested_dir)
+    if work_dir == tmp_root or not work_dir.startswith(tmp_root + os.sep):
+        return web.json_response({"error": "work_dir must be a subdirectory of /tmp"}, status=400)
 
     # Reset state
     _set_state(status="starting", progress={"current_step": "Initializing", "progress_percent": 0},
@@ -343,15 +358,16 @@ async def handle_pipeline_status(request):
 
 
 async def handle_pipeline_image(request):
-    """Serve an image file from the instance."""
+    """Serve an image file from the current work directory only."""
     img_path = request.query.get("path", "")
-    if not img_path or not os.path.exists(img_path):
-        return web.json_response({"error": "Image not found"}, status=404)
-    # Security: only serve from work_dir
     work_dir = _get_state("work_dir", "")
-    if work_dir and not img_path.startswith(work_dir):
+    if not img_path or not work_dir:
+        return web.json_response({"error": "Image not found"}, status=404)
+    root = os.path.realpath(work_dir)
+    path = os.path.realpath(img_path)
+    if not root.startswith("/tmp/") or os.path.commonpath([root, path]) != root or not os.path.isfile(path):
         return web.json_response({"error": "Access denied"}, status=403)
-    return web.FileResponse(img_path)
+    return web.FileResponse(path)
 
 
 async def main():

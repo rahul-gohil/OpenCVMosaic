@@ -231,3 +231,21 @@ mosaic/
   pipeline.py           the incremental stitching loop
   output.py             artefact writing
 ```
+
+## Benchmarking on AWS Graviton5 (COOL vs pip OpenCV)
+
+`COOL-Benchmark/` runs this exact pipeline on Graviton5 (`m9g`/`c9g`) and
+compares the COOL Marketplace OpenCV build against pip's
+`opencv-python-headless`, on the same instance, OS and Python version.
+
+* Orchestrator + web UI: `python COOL-Benchmark/pipeline-benchmark/pipeline-orchestrator.py`
+* Modes: DIY only, COOL only, Compare (DIY first, then COOL)
+* Metrics: per-stage chunk and merge timings, canvas size, content %, OpenCV
+  version/path
+* No credentials are stored in the repository; configuration lives in a
+  git-ignored `.env` and `config-marketplace.json`
+
+Full instructions: [COOL-Benchmark/README.md](COOL-Benchmark/README.md).
+
+On this SIFT-based mosaic the two builds are effectively at parity; the harness
+reports that honestly rather than assuming an OpenCV speedup.
