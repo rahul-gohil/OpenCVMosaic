@@ -335,6 +335,10 @@
                     if (isCompare && data.cool_pipeline_images && data.cool_pipeline_images.chunks && data.cool_pipeline_images.chunks.length > 0) {
                         updateImageGallery(data.cool_pipeline_images, "cool", isCompare);
                     }
+                    // Update DIY gallery with saved DIY images (if available)
+                    if (isCompare && data.diy_pipeline_images && data.diy_pipeline_images.chunks && data.diy_pipeline_images.chunks.length > 0) {
+                        updateImageGallery(data.diy_pipeline_images, "diy", isCompare);
+                    }
 
                     // Update per-stage timings
                     if (currentMode === "compare" && data.results) {
@@ -403,7 +407,7 @@
             if (!gallery || !mergedDiv) return;
 
             // If we just switched to local images, clear the gallery
-            const isLocal = images.chunks && images.chunks.length > 0 && images.chunks[0].url && (images.chunks[0].url.includes("local-image") || images.chunks[0].url.includes("cool-image"));
+            const isLocal = images.chunks && images.chunks.length > 0 && images.chunks[0].url && (images.chunks[0].url.includes("local-image") || images.chunks[0].url.includes("cool-image") || images.chunks[0].url.includes("diy-image"));
             const isCoolGallery = galleryId.includes("cool");
             const flag = isCoolGallery ? coolUsingLocalImages : usingLocalImages;
             if (isLocal && !flag) {

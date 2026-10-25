@@ -80,6 +80,7 @@ class PipelineBenchmarkTask:
     ssh_user: str = "ec2-user"
     local_images: Optional[Dict[str, str]] = None
     cool_local_images: Optional[Dict[str, str]] = None
+    diy_local_images: Optional[Dict[str, str]] = None
     build_progress: Optional[Dict[str, Any]] = None
     end_time: Optional[float] = None
     results: Optional[Dict[str, Any]] = None
@@ -259,24 +260,32 @@ class PipelineOrchestrator:
                 task.status = TaskStatus.COMPLETED
 
             else:
-                # Compare mode: run both COOL and DIY
-                task.current_run = "cool"
-                # Run COOL (marketplace) build first
-                cool_metrics = await self._run_pipeline_on_instance(
-                    ip, task.chunk_size, work_dir="/tmp/scratchpad_cool"
-                )
-
-                # Save COOL images before they're overwritten
-                self._cool_pipeline_images = getattr(self, "_last_pipeline_images", {}).copy()
-                # Reconfigure to DIY (pip)
+                # Compare mode: run DIY first, then COOL
+                # Instance starts in COOL mode, so reconfigure to DIY first
                 task.current_run = "reconfiguring"
-                task.build_progress = {"current_step": "Reconfiguring to DIY", "progress_percent": 70}
+                task.build_progress = {"current_step": "Reconfiguring to DIY", "progress_percent": 15}
                 await self._reconfigure_to_pip(ip)
 
                 # Run DIY build
                 task.current_run = "diy"
+                task.build_progress = {"current_step": "Running DIY pipeline", "progress_percent": 30}
                 diy_metrics = await self._run_pipeline_on_instance(
                     ip, task.chunk_size, work_dir="/tmp/scratchpad_diy"
+                )
+
+                # Save DIY images before reconfiguring back to COOL
+                self._diy_pipeline_images = getattr(self, "_last_pipeline_images", {}).copy()
+
+                # Reconfigure back to COOL
+                task.current_run = "reconfiguring"
+                task.build_progress = {"current_step": "Reconfiguring to COOL", "progress_percent": 65}
+                await self._reconfigure_to_cool(ip)
+
+                # Run COOL build
+                task.current_run = "cool"
+                task.build_progress = {"current_step": "Running COOL pipeline", "progress_percent": 75}
+                cool_metrics = await self._run_pipeline_on_instance(
+                    ip, task.chunk_size, work_dir="/tmp/scratchpad_cool"
                 )
 
                 # Compare
@@ -494,7 +503,10 @@ WantedBy=multi-user.target
         os.makedirs(local_dir, exist_ok=True)
         task.local_images = {"chunks": [], "merged": None, "merged_preview": None}
 
+        # Download COOL images (current _last_pipeline_images after COOL run)
         images = getattr(self, "_last_pipeline_images", {})
+        if not images:
+            images = getattr(self, "_cool_pipeline_images", {})
         if not images:
             return
 
@@ -555,6 +567,68 @@ WantedBy=multi-user.target
                 logger.warning(f"Could not download preview: {e}")
 
         logger.info(f"Downloaded {len(task.local_images['chunks'])} chunks + merged to {local_dir}")
+
+        # Download DIY images (if available from compare mode)
+        diy_images = getattr(self, "_diy_pipeline_images", {})
+        if diy_images:
+            diy_local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task.task_id}-diy")
+            os.makedirs(diy_local_dir, exist_ok=True)
+            task.diy_local_images = {"chunks": [], "merged": None, "merged_preview": None}
+
+            for chunk in diy_images.get("chunks", []):
+                remote_path = chunk["path"]
+                local_name = f"{chunk['name']}.jpg"
+                local_path = os.path.join(diy_local_dir, local_name)
+                try:
+                    proc = subprocess.run(
+                        ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
+                         f"{ssh_user}@{ip}:{remote_path}", local_path],
+                        capture_output=True, text=True, timeout=60
+                    )
+                    if proc.returncode == 0 and _os.path.exists(local_path):
+                        task.diy_local_images["chunks"].append({
+                            "name": chunk["name"],
+                            "path": local_path,
+                            "size_bytes": _os.path.getsize(local_path),
+                        })
+                except Exception as e:
+                    logger.warning(f"Could not download DIY {remote_path}: {e}")
+
+            if diy_images.get("merged"):
+                remote_path = diy_images["merged"]["path"]
+                local_path = os.path.join(diy_local_dir, "mosaic_merged.jpg")
+                try:
+                    proc = subprocess.run(
+                        ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
+                         f"{ssh_user}@{ip}:{remote_path}", local_path],
+                        capture_output=True, text=True, timeout=120
+                    )
+                    if proc.returncode == 0 and _os.path.exists(local_path):
+                        task.diy_local_images["merged"] = {
+                            "path": local_path,
+                            "size_bytes": _os.path.getsize(local_path),
+                        }
+                except Exception as e:
+                    logger.warning(f"Could not download DIY merged: {e}")
+
+            if diy_images.get("merged_preview"):
+                remote_path = diy_images["merged_preview"]["path"]
+                local_path = os.path.join(diy_local_dir, "mosaic_merged_preview.jpg")
+                try:
+                    proc = subprocess.run(
+                        ["scp", "-o", "StrictHostKeyChecking=no", "-i", key_path,
+                         f"{ssh_user}@{ip}:{remote_path}", local_path],
+                        capture_output=True, text=True, timeout=60
+                    )
+                    if proc.returncode == 0 and _os.path.exists(local_path):
+                        task.diy_local_images["merged_preview"] = {
+                            "path": local_path,
+                            "size_bytes": _os.path.getsize(local_path),
+                        }
+                except Exception as e:
+                    logger.warning(f"Could not download DIY preview: {e}")
+
+            logger.info(f"Downloaded {len(task.diy_local_images['chunks'])} DIY chunks + merged")
 
         # Download COOL images (if available from compare mode)
         cool_images = getattr(self, "_cool_pipeline_images", {})
@@ -745,91 +819,79 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
         if not task:
             return {"error": "Task not found"}
         ip = getattr(task, "instance_ip", None)
-        pipeline_images = getattr(self, "_last_pipeline_images", {})
-        cool_pipeline_images = getattr(self, "_cool_pipeline_images", {})
-        local_images = getattr(task, "local_images", None)
-        cool_local_images = getattr(task, "cool_local_images", None)
-        # Build image URLs - prefer local (downloaded) over remote (SCP)
-        image_urls = {"chunks": [], "merged": None, "merged_preview": None}
+        pipeline_images = getattr(self, "_last_pipeline_images", {})  # COOL images (last run)
+        diy_pipeline_images = getattr(self, "_diy_pipeline_images", {})  # DIY images (saved)
+        local_images = getattr(task, "local_images", None)  # COOL local images
+        diy_local_images = getattr(task, "diy_local_images", None)  # DIY local images
+        # Helper to build image URLs from local images
+        def _build_local_urls(local_imgs, name_prefix=""):
+            urls = {"chunks": [], "merged": None, "merged_preview": None}
+            if not local_imgs:
+                return urls
+            for chunk in local_imgs.get("chunks", []):
+                urls["chunks"].append({
+                    "name": chunk["name"],
+                    "url": f"/api/benchmark/{task.task_id}/local-image?name={chunk['name']}.jpg" if name_prefix == "cool" else f"/api/benchmark/{task.task_id}/diy-image?name={chunk['name']}.jpg",
+                    "size_bytes": chunk.get("size_bytes", 0),
+                })
+            if local_imgs.get("merged"):
+                ep = "local-image" if name_prefix == "cool" else "diy-image"
+                urls["merged"] = {
+                    "url": f"/api/benchmark/{task.task_id}/{ep}?name=mosaic_merged.jpg",
+                    "size_bytes": local_imgs["merged"].get("size_bytes", 0),
+                    "download_url": f"/api/benchmark/{task.task_id}/{ep}?name=mosaic_merged.jpg&download=1",
+                }
+            if local_imgs.get("merged_preview"):
+                ep = "local-image" if name_prefix == "cool" else "diy-image"
+                urls["merged_preview"] = {
+                    "url": f"/api/benchmark/{task.task_id}/{ep}?name=mosaic_merged_preview.jpg",
+                    "size_bytes": local_imgs["merged_preview"].get("size_bytes", 0),
+                }
+            return urls
+
+        # Helper to build image URLs from remote pipeline images
+        def _build_remote_urls(pimgs):
+            urls = {"chunks": [], "merged": None, "merged_preview": None}
+            if not pimgs or not ip:
+                return urls
+            import urllib.parse
+            for chunk in pimgs.get("chunks", []):
+                urls["chunks"].append({
+                    "name": chunk["name"],
+                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(chunk['path'], safe='')}",
+                    "size_bytes": chunk.get("size_bytes", 0),
+                })
+            if pimgs.get("merged"):
+                urls["merged"] = {
+                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(pimgs['merged']['path'], safe='')}",
+                    "size_bytes": pimgs["merged"].get("size_bytes", 0),
+                    "download_url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(pimgs['merged']['path'], safe='')}&download=1",
+                }
+            if pimgs.get("merged_preview"):
+                urls["merged_preview"] = {
+                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(pimgs['merged_preview']['path'], safe='')}",
+                    "size_bytes": pimgs["merged_preview"].get("size_bytes", 0),
+                }
+            return urls
+
+        # Build COOL image URLs (prefer local over remote)
         if local_images:
-            for chunk in local_images.get("chunks", []):
-                image_urls["chunks"].append({
-                    "name": chunk["name"],
-                    "url": f"/api/benchmark/{task.task_id}/local-image?name={chunk['name']}.jpg",
-                    "size_bytes": chunk.get("size_bytes", 0),
-                })
-            if local_images.get("merged"):
-                image_urls["merged"] = {
-                    "url": f"/api/benchmark/{task.task_id}/local-image?name=mosaic_merged.jpg",
-                    "size_bytes": local_images["merged"].get("size_bytes", 0),
-                    "download_url": f"/api/benchmark/{task.task_id}/local-image?name=mosaic_merged.jpg&download=1",
-                }
-            if local_images.get("merged_preview"):
-                image_urls["merged_preview"] = {
-                    "url": f"/api/benchmark/{task.task_id}/local-image?name=mosaic_merged_preview.jpg",
-                    "size_bytes": local_images["merged_preview"].get("size_bytes", 0),
-                }
-        # Build COOL local image URLs (if downloaded)
-        cool_local_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
-        if cool_local_images:
-            for chunk in cool_local_images.get("chunks", []):
-                cool_local_image_urls["chunks"].append({
-                    "name": chunk["name"],
-                    "url": f"/api/benchmark/{task.task_id}/cool-image?name={chunk['name']}.jpg",
-                    "size_bytes": chunk.get("size_bytes", 0),
-                })
-            if cool_local_images.get("merged"):
-                cool_local_image_urls["merged"] = {
-                    "url": f"/api/benchmark/{task.task_id}/cool-image?name=mosaic_merged.jpg",
-                    "size_bytes": cool_local_images["merged"].get("size_bytes", 0),
-                    "download_url": f"/api/benchmark/{task.task_id}/cool-image?name=mosaic_merged.jpg&download=1",
-                }
-            if cool_local_images.get("merged_preview"):
-                cool_local_image_urls["merged_preview"] = {
-                    "url": f"/api/benchmark/{task.task_id}/cool-image?name=mosaic_merged_preview.jpg",
-                    "size_bytes": cool_local_images["merged_preview"].get("size_bytes", 0),
-                }
-
+            cool_image_urls = _build_local_urls(local_images, "cool")
         elif ip and pipeline_images:
-            import urllib.parse
-            for chunk in pipeline_images.get("chunks", []):
-                image_urls["chunks"].append({
-                    "name": chunk["name"],
-                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(chunk['path'], safe='')}",
-                    "size_bytes": chunk.get("size_bytes", 0),
-                })
-            if pipeline_images.get("merged"):
-                image_urls["merged"] = {
-                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(pipeline_images['merged']['path'], safe='')}",
-                    "size_bytes": pipeline_images["merged"].get("size_bytes", 0),
-                    "download_url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(pipeline_images['merged']['path'], safe='')}&download=1",
-                }
-            if pipeline_images.get("merged_preview"):
-                image_urls["merged_preview"] = {
-                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(pipeline_images['merged_preview']['path'], safe='')}",
-                    "size_bytes": pipeline_images["merged_preview"].get("size_bytes", 0),
-                }
+            cool_image_urls = _build_remote_urls(pipeline_images)
+        else:
+            cool_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
 
-        # Build COOL image URLs (from saved COOL images or local download)
-        cool_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
-        if cool_pipeline_images and not local_images:
-            import urllib.parse
-            for chunk in cool_pipeline_images.get("chunks", []):
-                cool_image_urls["chunks"].append({
-                    "name": chunk["name"],
-                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(chunk['path'], safe='')}",
-                    "size_bytes": chunk.get("size_bytes", 0),
-                })
-            if cool_pipeline_images.get("merged"):
-                cool_image_urls["merged"] = {
-                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(cool_pipeline_images['merged']['path'], safe='')}",
-                    "size_bytes": cool_pipeline_images["merged"].get("size_bytes", 0),
-                }
-            if cool_pipeline_images.get("merged_preview"):
-                cool_image_urls["merged_preview"] = {
-                    "url": f"/api/benchmark/{task.task_id}/image?path={urllib.parse.quote(cool_pipeline_images['merged_preview']['path'], safe='')}",
-                    "size_bytes": cool_pipeline_images["merged_preview"].get("size_bytes", 0),
-                }
+        # Build DIY image URLs (prefer local over remote)
+        if diy_local_images:
+            diy_image_urls = _build_local_urls(diy_local_images, "diy")
+        elif ip and diy_pipeline_images:
+            diy_image_urls = _build_remote_urls(diy_pipeline_images)
+        else:
+            diy_image_urls = {"chunks": [], "merged": None, "merged_preview": None}
+
+        # pipeline_images = COOL images (for backward compat with frontend)
+        image_urls = cool_image_urls
 
         return {
             "task_id": task.task_id,
@@ -846,7 +908,8 @@ echo "DIY Pipeline ready" > /tmp/pipeline_ready
             "pipeline_stage": getattr(self, "_last_pipeline_stage", ""),
             "pipeline_pct": getattr(self, "_last_pipeline_pct", 0),
             "pipeline_images": image_urls,
-            "cool_pipeline_images": cool_image_urls if not cool_local_images else cool_local_image_urls,
+            "cool_pipeline_images": cool_image_urls,
+            "diy_pipeline_images": diy_image_urls,
             "results": task.results,
             "error": task.error,
             "elapsed_time": __import__("time").time() - task.start_time,
@@ -1007,6 +1070,27 @@ async def create_app():
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
     app.router.add_get("/api/benchmark/{task_id}/cool-image", handle_cool_image)
+    async def handle_diy_image(request):
+        task_id = request.match_info["task_id"]
+        task = orchestrator.tasks.get(task_id)
+        if not task or not getattr(task, "diy_local_images", None):
+            resp = web.json_response({"error": "No diy local images"}, status=404)
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            return resp
+        name = request.query.get("name", "")
+        import tempfile, os as _os
+        local_dir = os.path.join(tempfile.gettempdir(), f"pipeline-results-{task_id}-diy")
+        file_path = os.path.join(local_dir, name)
+        if not _os.path.exists(file_path):
+            resp = web.json_response({"error": "File not found"}, status=404)
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            return resp
+        resp = web.FileResponse(file_path)
+        if request.query.get("download"):
+            resp.headers['Content-Disposition'] = 'attachment; filename="mosaic_merged.jpg"'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    app.router.add_get("/api/benchmark/{task_id}/diy-image", handle_diy_image)
     async def handle_local_image(request):
         task_id = request.match_info["task_id"]
         task = orchestrator.tasks.get(task_id)
