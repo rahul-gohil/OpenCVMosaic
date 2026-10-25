@@ -393,26 +393,25 @@ WantedBy=multi-user.target
             'echo "Step 2: Installing pip + OpenCV via system Python..."',
             "sudo apt-get update -y -qq",
             "sudo apt-get install -y -qq python3-pip",
-            f"sudo pip3 install --break-system-packages opencv-python-headless=={pip_version} numpy scipy aiohttp || exit 1",
+            f"sudo pip3 install --break-system-packages --root-user-action=ignore opencv-python-headless=={pip_version} numpy scipy aiohttp || exit 1",
 
             # Step 3: Register bundled wheel libs + fix cv2 bootstrap
+            # Use sudo for all file operations since SSH user is ubuntu (not root)
             (
                 'echo "Step 3: Registering bundled wheel libs and fixing cv2 bootstrap..." && '
                 'SITE_PKG=$(python3 -c "import site; print(site.getsitepackages()[0])") && '
                 'LDCONF=/etc/ld.so.conf.d/pip-wheel-bundled.conf && '
-                '> "$LDCONF" && '
+                'sudo truncate -s 0 "$LDCONF" && '
                 'for D in "$SITE_PKG/numpy.libs" "$SITE_PKG/opencv_python_headless.libs"; do '
-                '  [ -d "$D" ] && echo "$D" >> "$LDCONF" && echo "Registered: $D"; '
+                '  [ -d "$D" ] && echo "$D" | sudo tee -a "$LDCONF" > /dev/null && echo "Registered: $D"; '
                 'done; '
                 'sudo ldconfig && '
                 'CV2_DIR="$SITE_PKG/cv2" && '
                 'ABI3="$CV2_DIR/cv2.abi3.so" && '
                 'PY312="$CV2_DIR/python-3.12" && '
-                '[ -f "$PY312/cv2.cpython-312-aarch64-linux-gnu.so" ] && '
-                '  rm -f "$PY312/cv2.cpython-312-aarch64-linux-gnu.so" && '
-                '  echo "Removed stale cpython-312 extension"; '
-                'find "$CV2_DIR" -maxdepth 1 -name "cv2.cpython-*.so" -delete 2>/dev/null; '
-                '[ -f "$ABI3" ] && mkdir -p "$PY312" && ln -sf "$ABI3" "$PY312/cv2.abi3.so" && '
+                'sudo rm -f "$PY312/cv2.cpython-312-aarch64-linux-gnu.so" 2>/dev/null; '
+                'sudo find "$CV2_DIR" -maxdepth 1 -name "cv2.cpython-*.so" -delete 2>/dev/null; '
+                '[ -f "$ABI3" ] && sudo mkdir -p "$PY312" && sudo ln -sf "$ABI3" "$PY312/cv2.abi3.so" && '
                 '  echo "Linked abi3 into python-3.12/"; '
                 'python3 -c "import cv2; print(f\"DIY OpenCV {cv2.__version__} installed\")" || exit 1'
             ),
