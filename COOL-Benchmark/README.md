@@ -82,8 +82,11 @@ AWS_DEFAULT_REGION=us-east-1
 EC2_KEY_PAIR_NAME=mosaic-key
 EC2_KEY_PATH=/home/you/.ssh/mosaic-key.pem
 MARKETPLACE_AMI_ID=ami-xxxxxxxxxxxxxxxxx
-# optional: BENCHMARK_ALLOWED_CIDR=203.0.113.7/32
 ```
+
+These keys should live in your `.env` (git-ignored):
+`AWS_DEFAULT_REGION`, `EC2_KEY_PAIR_NAME`, `EC2_KEY_PATH` and
+`MARKETPLACE_AMI_ID`. Do not put AWS secret keys there — use a profile.
 
 Edit `config-marketplace.json` with the AMI ID from your Marketplace
 subscription page (region `us-east-1`). The orchestrator also accepts the AMI
@@ -194,20 +197,6 @@ can verify which build actually ran.
 | Reconfigure fails on `dpkg` lock | Cloud-init/reconfigure waits for and stops `unattended-upgrades`; retry on a fresh instance if it persists. |
 
 ---
-
-## Security
-
-* **No credentials are stored in this repository.** `.env`, `config-marketplace.json`,
-  `*.pem` and logs are git-ignored; `.env.example` and
-  `config-marketplace.example.json` contain placeholders only.
-* AWS credentials are resolved by boto3 from your environment/profile.
-* The orchestrator does not require AWS credentials on the EC2 instance.
-* Served filenames and proxied paths are restricted to the benchmark scratch
-  directories; the MCP server rejects `work_dir` values outside `/tmp`.
-* Ports 8080 and 22 are opened on the benchmark security group. For tighter
-  security set `BENCHMARK_ALLOWED_CIDR` to your own IP (`x.x.x.x/32`).
-* The orchestrator binds `0.0.0.0:8080` and has no authentication. Run it on a
-  trusted network or behind an SSH tunnel / reverse proxy if exposed.
 
 ---
 
