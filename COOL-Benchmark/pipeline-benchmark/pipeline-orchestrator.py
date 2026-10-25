@@ -398,7 +398,7 @@ class PipelineOrchestrator:
                 'sudo find "$CV2_DIR" -maxdepth 1 -name "cv2.cpython-*.so" -delete 2>/dev/null; '
                 '[ -f "$ABI3" ] && sudo mkdir -p "$PY312" && sudo ln -sf "$ABI3" "$PY312/cv2.abi3.so" && '
                 '  echo "Linked abi3 into python-3.12/"; '
-                'python3 -c "import cv2; print(f\"DIY OpenCV {cv2.__version__} installed\")" || exit 1'
+                "python3 -c 'import cv2; print(f\"DIY OpenCV {cv2.__version__} installed\")' || exit 1"
             ),
 
             # Step 4: Switching systemd to DIY (system Python)...

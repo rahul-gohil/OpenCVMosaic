@@ -192,6 +192,29 @@
                 if (cfg.ami_id) document.getElementById("ami-id").value = cfg.ami_id;
                 if (cfg.key_path) currentKeyPath = cfg.key_path;
             } catch (e) { /* ignore */ }
+            // Restore task from URL hash
+            const hashMatch = location.hash.match(/task=([a-f0-9-]+)/);
+            if (hashMatch) {
+                currentTaskId = hashMatch[1];
+                try {
+                    const resp = await fetch(API + "/api/benchmark/" + currentTaskId + "/status");
+                    const data = await resp.json();
+                    if (data.status === "completed") {
+                        showResults(data.results, data.mode || currentMode);
+                        document.getElementById("run-btn").disabled = false;
+                        document.getElementById("stop-btn").disabled = true;
+                    } else if (data.status === "failed") {
+                        log("FAILED: " + (data.error || "unknown error"));
+                        document.getElementById("run-btn").disabled = false;
+                        document.getElementById("stop-btn").disabled = true;
+                    } else {
+                        pollStatus();
+                        startLogPolling();
+                    }
+                } catch (e) {
+                    log("Could not restore task: " + e.message);
+                }
+            }
         })();
         let currentTaskId = null;
         let pollInterval = null;
@@ -267,6 +290,7 @@
                 const data = await resp.json();
                 if (data.error) throw new Error(data.error);
                 currentTaskId = data.taskId;
+                location.hash = "task=" + currentTaskId;
                 log("Task started: " + currentTaskId);
                 pollStatus();
                 startLogPolling();
