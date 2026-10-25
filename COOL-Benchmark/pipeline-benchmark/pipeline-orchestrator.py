@@ -396,7 +396,7 @@ WantedBy=multi-user.target
             # python3-pip already installed during cloud-init; just ensure it's available
             "sudo python3 -m ensurepip --upgrade 2>/dev/null || true",
             # Wait for any dpkg lock to be released (unattended-upgrades)
-            'for i in $(seq 1 30); do if ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then break; fi; echo "Waiting for dpkg lock... ($i)"; sleep 2; done',
+            'for i in $(seq 1 60); do if [ ! -f /var/lib/dpkg/lock-frontend ] || ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then break; fi; echo "Waiting for dpkg lock... ($i)"; sleep 2; done',
             # If lock still held, kill unattended-upgrade process
             'sudo pkill -f unattended-upgrade 2>/dev/null || true',
             'sleep 2',
